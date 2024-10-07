@@ -54,13 +54,13 @@ const SettingStoreModule: Module<State, any> = {
     settings(state) {
       return state.settings
     },
-    themeValue(state) {
+    themeValue(state, _getters, _rootState, rootGetters) {
       const theme = state.settings.theme ? state.settings.theme.value : null;
       if (!theme) return null
-      if (['system', 'dark', 'light'].includes(theme as string)) {
+      if (rootGetters.isCommunity && ['system', 'dark', 'light'].includes(theme as string)) {
         return theme
       }
-      return 'system'
+      return rootGetters.isUltimate ? theme : 'system';
     },
     menuStyle(state) {
       if (!state.settings.menuStyle) return 'native'
@@ -70,10 +70,16 @@ const SettingStoreModule: Module<State, any> = {
       if (!state.settings.sortOrder) return 'id'
       return state.settings.sortOrder.value
     },
-    minimalMode(state) {
-      if (!state.settings.minimalMode) return false;
-      return state.settings.minimalMode.value
+    minimalMode(_state) {
+      // Disable minimal mode in favor of #2380
+      return false
+      // if (!state.settings.minimalMode) return false;
+      // return state.settings.minimalMode.value
     },
+    lastUsedWorkspace(state) {
+      if (!state.settings.lastUsedWorkspace) return null;
+      return state.settings.lastUsedWorkspace
+    }
   }
 }
 
