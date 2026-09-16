@@ -1,0 +1,196 @@
+import _ from "lodash";
+import { Module } from "vuex";
+import { State as RootState } from "../index";
+import { SmartLocalStorage } from "@/common/LocalStorage";
+import { TreeExpansionModule, TreeExpansionState } from "./sidebar/TreeExpansionModule";
+
+export interface SidebarTab {
+  id: string;
+  label: string;
+  /** By passing url, the tab will load an iframe */
+  url?: string;
+}
+
+export type State = {
+  tabs: SidebarTab[];
+  /** in pixels */
+  primarySidebarWidth: number;
+  primarySidebarOpen: boolean;
+  /** in pixels */
+  secondarySidebarWidth: number;
+  secondarySidebarOpen: boolean;
+  secondaryActiveTabId?: string;
+  globalSidebarActiveItem: GlobalSidebarActiveItem;
+} & {
+  // Set by VueX module
+  connections: TreeExpansionState
+  queries: TreeExpansionState
+}
+
+const PRIMARY_SIDEBAR_OPEN_KEY = 'primarySidebarOpen-v2'
+const PRIMARY_SIDEBAR_WIDTH_KEY = "primarySidebarWidth-v3"
+const SECONDARY_SIDEBAR_OPEN_KEY = 'secondarySidebarOpen-v2'
+const SECONDARY_SIDEBAR_WIDTH_KEY = "secondarySidebarWidth-v3"
+const GLOBAL_SIDEBAR_ACTIVE_ITEM_KEY = "globalSidebarActiveItem-v1"
+
+const PRIMARY_SIDEBAR_INITIAL_WIDTH = 240 // in pixels
+const SECONDARY_SIDEBAR_INITIAL_WIDTH = 240 // in pixels
+
+type GlobalSidebarActiveItem = "tables" | "history" | "queries";
+const GLOBAL_SIDEBAR_ITEMS: GlobalSidebarActiveItem[] = ["tables", "history", "queries"];
+
+function getStoredGlobalSidebarActiveItem(): GlobalSidebarActiveItem | null {
+  const stored = SmartLocalStorage.getJSON(GLOBAL_SIDEBAR_ACTIVE_ITEM_KEY);
+  return GLOBAL_SIDEBAR_ITEMS.includes(stored) ? stored : null;
+}
+
+function getInitialGlobalSidebarActiveItem(): GlobalSidebarActiveItem {
+  // window.bksConfig isn't available yet when the store is constructed, so the
+  // configured default is applied later via the initGlobalSidebarActiveItem
+  // action. Fall back to "tables" until then.
+  return getStoredGlobalSidebarActiveItem() ?? "tables";
+}
+
+export const SidebarModule: Module<State, RootState> = {
+  namespaced: true,
+  modules: {
+    connections: TreeExpansionModule,
+    queries: TreeExpansionModule,
+  },
+  state: () => ({
+    tabs: [
+      {
+        id: "json-viewer",
+        label: "JSON Viewer",
+      },
+    ],
+
+    // PRIMARY SIDEBAR
+    primarySidebarOpen: SmartLocalStorage.getBool(PRIMARY_SIDEBAR_OPEN_KEY, true),
+    primarySidebarWidth: SmartLocalStorage.getJSON(PRIMARY_SIDEBAR_WIDTH_KEY, PRIMARY_SIDEBAR_INITIAL_WIDTH),
+
+    // SECONDARY SIDEBAR
+    secondarySidebarOpen: SmartLocalStorage.getBool(SECONDARY_SIDEBAR_OPEN_KEY, false),
+    secondarySidebarWidth: SmartLocalStorage.getJSON(SECONDARY_SIDEBAR_WIDTH_KEY, SECONDARY_SIDEBAR_INITIAL_WIDTH),
+    secondaryActiveTabId: "json-viewer",
+
+    globalSidebarActiveItem: getInitialGlobalSidebarActiveItem(),
+  }),
+  getters: {
+  },
+  mutations: {
+    // PRIMARY SIDEBAR
+    primarySidebarOpen(state, value: boolean) {
+      state.primarySidebarOpen = value
+    },
+    primarySidebarWidth(state, width: number) {
+      state.primarySidebarWidth = width
+    },
+    globalSidebarActiveItem(state, item: GlobalSidebarActiveItem) {
+      state.globalSidebarActiveItem = item
+    },
+
+    // SECONDARY SIDEBAR
+    secondarySidebarOpen(state, value: boolean) {
+      state.secondarySidebarOpen = value
+    },
+    secondarySidebarWidth(state, width: number) {
+      state.secondarySidebarWidth = width
+    },
+    secondaryActiveTabId(state, tabId: string) {
+      state.secondaryActiveTabId = tabId;
+    },
+    addSecondarySidebar(state, tab: SidebarTab) {
+      state.tabs.push(tab)
+    },
+    removeSecondarySidebar(state, tabId: string) {
+      state.tabs = state.tabs.filter((t) => t.id !== tabId)
+    },
+  },
+  actions: {
+    // PRIMARY SIDEBAR
+    setPrimarySidebarOpen(context, open: boolean) {
+      SmartLocalStorage.setBool(PRIMARY_SIDEBAR_OPEN_KEY, open)
+      context.commit('primarySidebarOpen', open)
+    },
+    /** @param width - in pixels */
+    setPrimarySidebarWidth(context, width: number) {
+      SmartLocalStorage.addItem(PRIMARY_SIDEBAR_WIDTH_KEY, width)
+      context.commit("primarySidebarWidth", width)
+    },
+
+    // SECONDARY SIDEBAR
+    setSecondarySidebarOpen(context, open: boolean) {
+      SmartLocalStorage.setBool(SECONDARY_SIDEBAR_OPEN_KEY, open)
+      context.commit('secondarySidebarOpen', open)
+    },
+    /** @param width - in pixels */
+    setSecondarySidebarWidth(context, width: number) {
+      SmartLocalStorage.addItem(SECONDARY_SIDEBAR_WIDTH_KEY, width)
+      context.commit("secondarySidebarWidth", width)
+    },
+    setSecondaryActiveTabId(context, tabId: string) {
+      if (!context.state.tabs.find((t) => t.id === tabId)) {
+        throw new Error(`Tab ${tabId} does not exist`);
+      }
+      context.commit("secondaryActiveTabId", tabId);
+    },
+
+    setGlobalSidebarActiveItem(context, item: GlobalSidebarActiveItem) {
+      SmartLocalStorage.addItem(GLOBAL_SIDEBAR_ACTIVE_ITEM_KEY, item);
+      context.commit("globalSidebarActiveItem", item);
+    },
+
+    /**
+     * Apply the configured default sidebar tab. A tab the user has previously
+     * selected is persisted to localStorage and always wins, so the default
+     * only takes effect until they manually switch tabs for the first time.
+     * The caller supplies the default (from config) so the store stays
+     * decoupled from where it comes from.
+     */
+    applyDefaultGlobalSidebarActiveItem(context, item: GlobalSidebarActiveItem) {
+      if (getStoredGlobalSidebarActiveItem()) return;
+      if (GLOBAL_SIDEBAR_ITEMS.includes(item)) {
+        context.commit("globalSidebarActiveItem", item);
+      }
+    },
+
+    /**
+     * Prior to this, we use percentages to determine widths of the sidebars.
+     * This function will make sure the percentages are transformed into
+     * pixels so upgrading users don't see the sidebars resizing.
+     *
+     * @param params.containerWidth - in pixels
+     */
+    readjustWidths(context, params: { containerWidth: number }) {
+      const PRIMARY_SIDEBAR_SIZE_KEY = "primarySidebarOpenSize-v2";
+      const SECONDARY_SIDEBAR_SIZE_KEY = "secondarySidebarCurrentSize-v2";
+
+      if (SmartLocalStorage.exists(PRIMARY_SIDEBAR_SIZE_KEY)) {
+        const size = SmartLocalStorage.getJSON(PRIMARY_SIDEBAR_SIZE_KEY);
+        if (_.isNumber(size)) {
+          const width = params.containerWidth * (size / 100);
+          const clampedWidth = Math.max(
+            width,
+            window.bksConfig.ui.layout.primarySidebarMinWidth
+          );
+          context.dispatch("setPrimarySidebarWidth", clampedWidth);
+          SmartLocalStorage.remove(PRIMARY_SIDEBAR_SIZE_KEY);
+        }
+      }
+
+      if (SmartLocalStorage.exists(SECONDARY_SIDEBAR_SIZE_KEY)) {
+        const size = SmartLocalStorage.getJSON(SECONDARY_SIDEBAR_SIZE_KEY);
+        if (_.isNumber(size)) {
+          const width = params.containerWidth * (size / 100);
+          const clampedWidth = Math.max(
+            width,
+            window.bksConfig.ui.layout.secondarySidebarMinWidth
+          );
+          context.dispatch("setSecondarySidebarWidth", clampedWidth);
+          SmartLocalStorage.remove(SECONDARY_SIDEBAR_SIZE_KEY);
+        }
+      }
+    },
+  },
+};

@@ -27,8 +27,12 @@ Download the latest AppImage [from the Beekeeper Studio homepage](https://www.be
 
 If you want to integrate the AppImage into your system shell (so it appears in your Application menu), we recommend you [install AppImageLauncher](https://github.com/TheAssassin/AppImageLauncher/releases/latest).
 
-## Apt / DEB
-A repo is provided for Debian and Ubuntu 16.04+.
+## DEB
+A repo is provided for Debian and Ubuntu 22.04+.
+
+DEB builds are provided for both x86_64 and ARM64 systems.
+
+Either set the repo up using the code below, or [download the deb file from the latest release](https://github.com/beekeeper-studio/beekeeper-studio/releases/latest), and it will automatically install the repository on installation.
 
 ```bash
 # Install our GPG key
@@ -41,8 +45,56 @@ curl -fsSL https://deb.beekeeperstudio.io/beekeeper.key | sudo gpg --dearmor --o
 sudo apt update && sudo apt install beekeeper-studio -y
 ```
 
+## RPM
 
-## Snap Store / Ubuntu Store
+RPM builds are provided for both x86_64 and ARM64 systems
+
+Either set the repo up using the code below, or [download the rpm file from the latest release](https://github.com/beekeeper-studio/beekeeper-studio/releases/latest), and it will automatically install the repository on installation.
+
+```bash
+# Download a copy of our .repo file (to handle software updates)
+sudo curl -o /etc/yum.repos.d/beekeeper-studio.repo https://rpm.beekeeperstudio.io/beekeeper-studio.repo
+
+
+# Add our GPG public key
+sudo rpm --import https://rpm.beekeeperstudio.io/beekeeper.key
+
+# check if the repo is configured correctly
+dnf repolist
+
+# Then
+sudo dnf install beekeeper-studio
+# or, on legacy systems
+sudo yum install beekeeper-studio
+```
+
+## Arch Linux (and derivatives)
+
+Pacman (installed as local packages using `pacman -U`) packages are provided for both x86_64 and ARM64 systems, you can download them from [the latest release](https://github.com/beekeeper-studio/beekeeper-studio).
+
+There are also several options in the AUR. The Beekeeper Studio Team maintain the [beekeeper-studio-appimage](https://aur.archlinux.org/packages/beekeeper-studio-appimage) and [beekeeper-studio-bin](https://aur.archlinux.org/packages/beekeeper-studio-bin) packages.
+
+These can be installed with your favourite AUR helper like so:
+```bash
+paru -S beekeeper-studio-appimage
+# Or
+paru -S beekeeper-studio-bin
+```
+
+## Flatpak
+
+Flatpak (.flatpak) files are provided separately for both x86_64 and ARM64 systems, you can download them from [the latest release](https://github.com/beekeeper-studio/beekeeper-studio).
+
+Flathub integration coming soon.
+
+!!! note "SQLite file access"
+    Flatpak sandboxes file access by default. If you need to open SQLite databases outside the sandbox, grant filesystem access with:
+    ```bash
+    sudo flatpak override io.beekeeperstudio.Studio --filesystem=host
+    ```
+    See [Troubleshooting](../support/troubleshooting.md#i-get-permission-denied-or-unable-to-open-database-file-when-trying-to-access-a-sqlite-database) for more details.
+
+## Snap
 
 You can also install Beekeeper Studio through Snapcraft (also part of the Ubuntu Store). Use either the Snap Store link below, or install through the terminal.
 
@@ -102,3 +154,15 @@ touch ~/.config/bks-flags.conf
 echo "--ozone-platform-hint=auto" >> ~/.config/bks-flags.conf
 echo "--enable-features=UseOzonePlatform" >> ~/.config/bks-flags.conf
 ```
+
+### Fixing weird colors on Wayland
+
+If you experience incorrect colors when using Wayland (e.g. oranges appearing yellow, greys looking almost black, overly bright whites, or poor text readability), this is caused by a [Chromium/Electron bug with the Wayland color management protocol](https://github.com/electron/electron/issues/49566).
+
+To fix this, add the following flag to your `~/.config/bks-flags.conf` file:
+
+```bash
+echo "--disable-features=WaylandWpColorManagerV1" >> ~/.config/bks-flags.conf
+```
+
+Then restart Beekeeper Studio for the change to take effect.

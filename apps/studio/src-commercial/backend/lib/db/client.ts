@@ -6,14 +6,27 @@ import { SQLServerClient } from '@/lib/db/clients/sqlserver';
 import { SqliteClient } from '@/lib/db/clients/sqlite';
 import { MariaDBClient } from '@/lib/db/clients/mariadb';
 import { TiDBClient } from '@/lib/db/clients/tidb';
+import { StarRocksClient } from '@/lib/db/clients/starrocks';
 import { RedshiftClient } from '@/lib/db/clients/redshift';
 import { CockroachClient } from '@/lib/db/clients/cockroach';
+import { GreengageClient } from '@/lib/db/clients/greengage';
 import { BigQueryClient } from '@/lib/db/clients/bigquery';
 import { IDbConnectionServer } from "@/lib/db/backendTypes";
 import { FirebirdClient } from "./clients/firebird";
 import { OracleClient } from "./clients/oracle";
 import { CassandraClient } from "./clients/cassandra";
+import { ScyllaDBClient } from "./clients/scylladb";
 import { LibSQLClient } from "./clients/libsql";
+import { DuckDBClient } from "./clients/duckdb";
+import { ClickHouseClient } from "./clients/clickhouse";
+import { MongoDBClient } from "./clients/mongodb";
+import { SQLAnywhereClient } from "./clients/anywhere";
+import { TrinoClient } from "./clients/trino";
+import { SurrealDBClient } from "./clients/surrealdb";
+import { RedisClient } from '@/lib/db/clients/redis';
+import { BedrockClient } from '@/lib/db/clients/bedrock';
+import { DynamoDBClient } from "./clients/dynamodb";
+import { SnowflakeClient } from "./clients/snowflake";
 
 const clients = new Map<ConnectionType, any>([
   ['mysql', MysqlClient],
@@ -23,22 +36,43 @@ const clients = new Map<ConnectionType, any>([
   ['redshift', RedshiftClient],
   ['mariadb', MariaDBClient],
   ['tidb', TiDBClient],
+  ['starrocks', StarRocksClient],
   ['cockroachdb', CockroachClient],
+  ['greengage', GreengageClient],
   ['bigquery', BigQueryClient],
   ['firebird', FirebirdClient],
   ['oracle', OracleClient],
   ['cassandra', CassandraClient],
+  ['scylladb', ScyllaDBClient],
   ['libsql', LibSQLClient],
-],);
+  ['duckdb', DuckDBClient],
+  ['clickhouse', ClickHouseClient],
+  ['mongodb', MongoDBClient],
+  ['sqlanywhere', SQLAnywhereClient],
+  ['trino', TrinoClient],
+  ['surrealdb', SurrealDBClient],
+  ['redis', RedisClient],
+  ['bedrock', BedrockClient],
+  ['dynamodb', DynamoDBClient],
+  ['snowflake', SnowflakeClient]
+], );
 
 
 class FriendlyErrorClient {
   constructor() {
-    throw new Error("Unknown DB type. You need to add a driver -> class mapping in src/lib/db/client.ts")
+    throw new Error("Unknown DB type. You need to add a driver -> class mapping in src-commercial/backend/lib/db/client.ts")
   }
 }
 
-export function createConnection(server: IDbConnectionServer, database: IDbConnectionDatabase) {
+export class ClientError extends Error {
+  helpLink = null
+  constructor(message: string, helpLink: string) {
+    super(message)
+    this.helpLink = helpLink
+  }
+}
+
+export function createConnection(server: IDbConnectionServer, database: IDbConnectionDatabase ) {
   /**
    * Database public API
    */

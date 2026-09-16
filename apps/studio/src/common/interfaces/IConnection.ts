@@ -1,8 +1,8 @@
-import { AzureAuthOptions, BigQueryOptions, CassandraOptions, LibSQLOptions, RedshiftOptions } from "@/lib/db/types"
+import { AzureAuthOptions, BigQueryOptions, CassandraOptions, DynamoDBOptions, LibSQLOptions, RedshiftOptions, ConnectionType, SQLAnywhereOptions, IamAuthOptions, SurrealDBOptions, SnowflakeOptions, SqlServerOptions } from "@/lib/db/types"
 import { Transport } from "../transport"
+import { IShareable } from "./IShareable"
+import { IAccessGrant } from "./IAccessGrant"
 
-const ConnectionTypes = ['sqlite', 'sqlserver', 'redshift', 'cockroachdb', 'mysql', 'postgresql', 'mariadb', 'cassandra', 'oracle', 'bigquery', 'firebird', 'tidb', 'libsql'] as const
-export type ConnectionType = typeof ConnectionTypes[number]
 export type SshMode = null | 'agent' | 'userpass' | 'keyfile'
 
 export function isUltimateType(s: ConnectionType) {
@@ -11,6 +11,14 @@ export function isUltimateType(s: ConnectionType) {
     'firebird',
     'cassandra',
     'libsql',
+    'duckdb',
+    'clickhouse',
+    'mongodb',
+    'sqlanywhere',
+    'trino',
+    'surrealdb',
+    'dynamodb',
+    'snowflake'
   ]
   return types.includes(s)
 }
@@ -27,13 +35,17 @@ export interface ISimpleConnection extends Transport {
   username: Nullable<string>
   domain: Nullable<string>
   defaultDatabase: Nullable<string>
-  uri: Nullable<string>
+  url: Nullable<string>
   sshEnabled: boolean
   sshHost: Nullable<string>
   sshPort: Nullable<number>
   sshKeyfile: Nullable<string>
   sshUsername: Nullable<string>
   sshBastionHost: Nullable<string>
+  sshBastionHostPort: Nullable<number>
+  sshBastionMode: SshMode
+  sshBastionUsername: Nullable<string>
+  sshBastionKeyfile: Nullable<string>
   sshKeepaliveInterval: Nullable<number>
   ssl: boolean
   sslCaFile: Nullable<string>
@@ -43,14 +55,23 @@ export interface ISimpleConnection extends Transport {
   readOnlyMode: boolean
   labelColor?: Nullable<string>
   trustServerCertificate?: boolean
+  windowsAuthEnabled?: boolean
+  sqlServerOptions?: SqlServerOptions
   serviceName: Nullable<string>
   options?: any
   redshiftOptions?: RedshiftOptions
+  iamAuthOptions?: IamAuthOptions
   cassandraOptions?: CassandraOptions
   bigQueryOptions?: BigQueryOptions
   azureAuthOptions?: AzureAuthOptions
   authId?: number
   libsqlOptions?: LibSQLOptions
+  sqlAnywhereOptions?: SQLAnywhereOptions
+  surrealDbOptions?: SurrealDBOptions
+  dynamoDbOptions?: DynamoDBOptions
+  snowflakeOptions?: SnowflakeOptions
+  connectionFolderId?: Nullable<number>
+  position?: number
 }
 
 export interface IConnection extends ISimpleConnection {
@@ -60,9 +81,12 @@ export interface IConnection extends ISimpleConnection {
   password: Nullable<string>
   sshPassword: Nullable<string>
   sshKeyfilePassword: Nullable<string>
+  sshBastionPassword: Nullable<string>
+  sshBastionKeyfilePassword: Nullable<string>
 }
 
-export interface ICloudSavedConnection extends IConnection {
+export interface ICloudSavedConnection extends IConnection, IShareable {
   userSpecificCredentials: boolean
   userSpecificPaths: boolean
+  accessGrants?: IAccessGrant[]
 }

@@ -1,15 +1,19 @@
 <template>
-  <div class="import-export__wrapper tabcontent">
+  <div
+    v-if="isCommunity"
+    class="upgrade-panel-tab-wrapper"
+  >
+    <upgrade-panel feature-name="Multi-Table Export" standalone />
+  </div>
+  <div v-else class="import-export__wrapper tabcontent">
     <div class="import-export__container">
-      <upsell-content v-if="!hasActiveLicense"></upsell-content>
       <stepper
-        v-else
         :steps="exportSteps"
         @finished="startExport"
         :button-portal-target="portalName"
       />
     </div>
-    <status-bar class="import-export__footer">
+    <status-bar class="import-export__footer" :active="active">
       <div class="statusbar-info col flex expand">
         <span
           class="statusbar-item"
@@ -87,7 +91,7 @@
   import ExportObjects from './ExportObjects.vue'
   import ExportOptions from './ExportOptions.vue'
   import ExportConfirmation from './ExportConfirmation.vue'
-  import UpsellContent from '../connection/UpsellContent.vue'
+  import UpgradePanel from '@/components/upsell/UpgradePanel.vue'
 
   import { ExportStatus } from '../../lib/export/models'
   import StatusBar from '@/components/common/StatusBar.vue';
@@ -96,9 +100,9 @@
     components: {
       Stepper,
       StatusBar,
-      UpsellContent
+      UpgradePanel
     },
-    props: ['schema', 'tab'],
+    props: ['schema', 'tab', 'active'],
     data() {
       return {
         exportSteps: [
@@ -132,7 +136,8 @@
             stepperProps: {
               exportsStarted: false,
               successModalName: `success-modal-${this.tab.id}`,
-              failModalName: `fail-modal-${this.tab.id}`
+              failModalName: `fail-modal-${this.tab.id}`,
+              preventAutoShowSuccessModal: true
             },
             completed: false,
             completePrevious: true,
@@ -148,7 +153,7 @@
       ...mapState('multiTableExports', ['tablesToExport', 'tableOptions', 'exportSchema']),
       ...mapGetters({
         'hasRunningExports': 'exports/hasRunningExports',
-        'hasActiveLicense': 'licenses/hasActiveLicense'
+        'isCommunity': 'isCommunity',
       }),
       selectedTables() {
         return this.tablesToExport.length;
@@ -167,7 +172,9 @@
         })
       },
       exportsAllDone() {
-        return !this.hasRunningExports && this.exportSteps[2].stepperProps.exportsStarted;
+        return !this.hasRunningExports 
+          && this.exportSteps[2].stepperProps.exportsStarted 
+          && this.checkAllExportsCompleted();
       }
     },
     watch: {
@@ -178,44 +185,91 @@
       }
     },
     methods: {
-      ...mapMutations({ addExport: 'exports/addExport' }),
+      ...mapMutations({ addExportToStore: 'exports/addExport' }),
       showFiles() {
-        this.$native.files.open(this.tableOptions.filePath)
+        this.$native.files.showItemInFolder(this.tableOptions.filePath)
       },
       async startExport() {
+        // Hide any success modal that might be showing already
+        this.$modal.hide(`success-modal-${this.tab.id}`);
+        
         this.tab.isRunning = true;
-        this.$util.addListener()
-        const exporters = this.listTables.map(async (exportTable) => {
+        const exporters = await Promise.all(this.listTables.map(async (exportTable) => {
           await this.$store.dispatch('updateTableColumns', exportTable.table)
           const exporterId = await this.addExport(exportTable)
           this.$util.addListener(`onExportProgress/${exporterId}`, (progress) => {
             this.$store.commit('exports/updateProgressFor', { id: exporterId, progress });
           })
           return exporterId;
-        })
+        }))
 
         this.exportSteps[2].stepperProps.exportsStarted = true
-        this.$util.send('export/batch', { ids: exporters }).then(() => {
+        
+        try {
+          await this.$util.send('export/batch', { ids: exporters });
+          
+          // Check for any failed exports
+          const failedExports = await this.checkForFailedExports(exporters);
+          
+          if (failedExports && failedExports.length > 0) {
+            // Show fail modal if any exports failed
+            this.$modal.show(`fail-modal-${this.tab.id}`);
+          } else {
+            // Only show success modal if all exports succeeded
+            this.$modal.show(`success-modal-${this.tab.id}`);
+          }
+        } catch (error) {
+          // Show fail modal on error
+          this.$modal.show(`fail-modal-${this.tab.id}`);
+        } finally {
           this.tab.isRunning = false;
-
           exporters.forEach((id) => {
             this.$util.removeListener(`onExportProgress/${id}`);
-          })
+          });
+        }
+      },
+      checkAllExportsCompleted() {
+        // Get all exports from our current batch
+        const batchExports = this.$store.state.exports.exports
+          .filter(exp => this.listTables.some(table => 
+            exp.filePath.includes(table.name)
+          ));
+        
+        // Check if all exports are either successful or failed
+        return batchExports.every(exp => 
+          exp.status === ExportStatus.COMPLETED || 
+          exp.status === ExportStatus.FAILED
+        );
+      },
+      async checkForFailedExports(exportIds) {
+        // Get all exports
+        const allExports = this.$store.state.exports.exports;
+        // Filter for failed exports from our batch
+        return exportIds.filter(id => {
+          const exp = allExports.find(e => e.id === id);
+          return exp && (
+            exp.status === ExportStatus.FAILED || 
+            exp.status === ExportStatus.Error || 
+            exp.status === ExportStatus.Aborted
+          );
         });
       },
       async addExport(tableToExport) {
         const tableOptions = this.tableOptions;
         const exporter = await this.$util.send('export/add', {
-          filePath: `${tableOptions.filePath}/${tableToExport.name}`,
-          table: tableToExport.table,
-          query: '',
-          queryName: '',
-          filters: tableOptions.filters || [],
-          options: tableOptions.options,
-          outputOptions: tableOptions.outputOptions,
-          managerNotify: false
+          options: {
+            filePath: `${tableOptions.filePath}/${tableToExport.name}`,
+            table: tableToExport.table,
+            query: '',
+            queryName: '',
+            filters: tableOptions.filters || [],
+            options: tableOptions.options,
+            outputOptions: tableOptions.outputOptions,
+            managerNotify: false,
+            exporter: tableOptions.exporter
+          }
         })
-        this.addExport(exporter);
+        this.addExportToStore(exporter);
         return exporter.id;
       },
       close() {
@@ -234,8 +288,8 @@
       },
     },
     async mounted() {
-      this.$store.dispatch('multiTableExports/reset')
-      this.$store.commit('exports/removeInactive')
+      await this.$store.dispatch('multiTableExports/reset')
+      await this.$store.dispatch('exports/removeInactive')
     }
   }
 </script>

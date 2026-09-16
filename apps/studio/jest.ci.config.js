@@ -1,5 +1,5 @@
 /* eslint-disable */
 var integrationConfig = require('./jest.integration.config')
 
-integrationConfig.testPathIgnorePatterns = ["/tests\/integration\/lib\/db/"]
+integrationConfig.testPathIgnorePatterns = [...integrationConfig.testPathIgnorePatterns, "/tests\/integration\/lib\/db/"]
 module.exports = integrationConfig

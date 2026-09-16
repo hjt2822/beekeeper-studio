@@ -1,8 +1,8 @@
 <template>
-  <div 
+  <div
     class="list-item"
     :title="title"
-    @contextmenu.stop.prevent="showContextMenu"
+    @contextmenu.prevent="showContextMenu"
   >
     <a
       href=""
@@ -13,26 +13,35 @@
     >
       <span :class="`connection-label connection-label-color-${labelColor}`" />
       <div class="connection-title flex-col expand">
-        <div class="title">{{ label }}</div>
-        <div class="subtitle"> 
+        <div class="title">
+          <editable-text
+            :initial-value="label"
+            :rename="rename"
+            @submit="submitRename"
+            @cancel="rename = false"
+          />
+        </div>
+        <div class="subtitle">
           <span
             class="bastion"
-            v-if="this.config.sshBastionHost"
+            v-if="displayConfig.sshBastionHost && !privacyMode"
           >
-            <span class="truncate">{{ this.config.sshBastionHost }}</span>&nbsp;>&nbsp;
+            <span class="truncate">{{ displayConfig.sshBastionHost }}</span>&nbsp;>&nbsp;
           </span>
           <span
             class="ssh"
-            v-if="this.config.sshHost"
+            v-if="displayConfig.sshHost && !privacyMode"
           >
-            <span class="truncate">{{ this.config.sshHost }}</span>&nbsp;>&nbsp;
+            <span class="truncate">{{ displayConfig.sshHost }}</span>&nbsp;>&nbsp;
           </span>
           <span class="connection">
-            <span>{{ subtitleSimple }}</span>
+            <span>
+              {{ privacyMode ? '******' : subtitleSimple }}
+            </span>
           </span>
         </div>
       </div>
-      <span class="badge"><span>{{ config.connectionType }}</span></span>
+      <span class="badge"><span>{{ displayConfig.connectionType }}</span></span>
       <span
         v-if="!isRecentList"
         class="actions"
@@ -66,54 +75,57 @@
   </div>
 </template>
 <script>
-import _ from 'lodash'
 import TimeAgo from 'javascript-time-ago'
 import { mapGetters, mapState } from 'vuex'
 import { isUltimateType } from '@/common/interfaces/IConnection'
+import EditableText from '@/components/common/EditableText.vue'
+import { AppEvent } from '@/common/AppEvent';
 
 export default {
+  components: { EditableText },
   // recent list is 'recent connections'
   // if that is true, we need to find the companion saved connection
-  props: ['config', 'isRecentList', 'selectedConfig', 'showDuplicate', 'pinned'],
+  props: [
+    'config',
+    'isRecentList',
+    'selectedConfig',
+    'showDuplicate',
+    'pinned',
+    'privacyMode'
+  ],
   data: () => ({
     timeAgo: new TimeAgo('en-US'),
-    split: null
+    split: null,
+    rename: false,
   }),
   computed: {
+    ...mapGetters(["isCloud", "workspace"]),
     ...mapState('data/connections', {'connectionConfigs': 'items'}),
     ...mapState('data/connectionFolders', {'folders': 'items'}),
-    ...mapGetters(['isCloud']),
-    moveToOptions() {
-      return this.folders
-        .filter((folder) => folder.id !== this.config.connectionFolderId)
-        .map((folder) => {
-        return {
-          name: `Move to ${folder.name}`,
-          slug: `move-${folder.id}`,
-          handler: this.moveItem,
-          folder
-        }
-      })
-    },
     classList() {
       return {
-        'active': this.savedConnection && this.selectedConfig ? this.savedConnection === this.selectedConfig : false
+        // the connection screen edits a copy, so compare by key, not identity
+        'active': !!this.savedConnection && !!this.selectedConfig &&
+          this.savedConnection.id === this.selectedConfig.id &&
+          this.savedConnection.workspaceId === this.selectedConfig.workspaceId
       }
     },
     labelColor() {
       return this.savedConnection ? this.savedConnection.labelColor : 'default'
     },
     label() {
-      if (this.savedConnection) {
+      if (this.savedConnection && this.savedConnection.name && this.savedConnection.name.trim()) {
         return this.savedConnection.name
-      } else if (this.config.connectionType === 'sqlite' || this.config.connectionType === 'libsql') {
-        return window.main.basename(this.config.defaultDatabase)
+      } else if ((this.displayConfig.connectionType === 'sqlite' || this.displayConfig.connectionType === 'libsql') && this.displayConfig.defaultDatabase) {
+        return window.main.basename(this.displayConfig.defaultDatabase)
+      } else if (this.displayConfig.connectionType === 'sqlanywhere' && this.displayConfig.sqlAnywhereOptions?.mode === 'file' && this.displayConfig.sqlAnywhereOptions?.databaseFile) {
+        return window.main.basename(this.displayConfig.sqlAnywhereOptions.databaseFile);
       }
 
-      return this.$bks.simpleConnectionString(this.config)
+      return this.$bks.simpleConnectionString(this.displayConfig)
     },
     connectionType() {
-      if (this.config.connectionType === 'sqlite' || this.config.connectionType === 'libsql') {
+      if (this.displayConfig.connectionType === 'sqlite' || this.displayConfig.connectionType === 'libsql') {
         return 'path'
       }
 
@@ -123,18 +135,20 @@ export default {
       if (this.isRecentList) {
         return this.timeAgo.format(this.config.updatedAt)
       } else {
-        return this.$bks.simpleConnectionString(this.config)
+        return this.$bks.simpleConnectionString(this.displayConfig)
       }
     },
     title() {
-      return this.$bks.buildConnectionString(this.config)
+      return this.privacyMode ?
+        `Created by ${this.author}` :
+        `Created by ${this.author}, ${this.$bks.buildConnectionString(this.displayConfig)}`;
     },
     savedConnection() {
 
       if (this.isRecentList) {
         if (!this.config.connectionId || !this.config.workspaceId) return null
 
-        return this.connectionConfigs.find((c) => 
+        return this.connectionConfigs.find((c) =>
           c.id === this.config.connectionId &&
           c.workspaceId === this.config.workspaceId
         )
@@ -142,12 +156,48 @@ export default {
         return this.config
       }
     },
+    folder() {
+      return this.folders.find((f) => f.id === this.savedConnection.connectionFolderId);
+    },
+    isPersonal() {
+      return this.folder?.personal;
+    },
+    // For display purposes only: prefer the linked saved connection when this
+    // is a recent-list row, so edits to the saved connection (host, port, ssh,
+    // etc.) propagate to the recent connections list. Falls back to the
+    // used_connection snapshot when the saved connection is gone (orphan
+    // recent entry).
+    displayConfig() {
+      return this.savedConnection || this.config
+    },
+    author() {
+      if (!this.isCloud) {
+        return "You";
+      }
+      if (!this.displayConfig || !this.displayConfig.membership) {
+        return "Unknown";
+      }
+      if (
+        this.displayConfig.membership.userId === this.workspace.currentMembership.userId
+      ) {
+        return "You";
+      }
+      return this.displayConfig.membership.name;
+    },
   },
   methods: {
     showContextMenu(event) {
-      const ultimateCheck = this.$config.isUltimate
+      // Stop here and propagate the event if right clicking an input element
+      if (event.target.tagName === 'INPUT') {
+        return;
+      }
+
+      event.stopPropagation();
+
+      const canConnect = this.$store.getters.isUltimate
         ? true
-        : !isUltimateType(this.config.connectionType)
+        : !isUltimateType(this.displayConfig.connectionType)
+      const canWrite = this.config.canWrite ?? true;
 
       const options = [
         {
@@ -155,10 +205,24 @@ export default {
           slug: 'view',
           handler: (blob) => this.click(blob.item)
         },
-        ultimateCheck && {
+        {
           name: 'Connect',
           slug: 'connect',
+          hideIf: !canConnect,
           handler: (blob) => this.doubleClick(blob.item)
+        },
+        { type: "divider" },
+        {
+          name: this.pinned ? 'Unpin' : 'Pin',
+          handler: () => this.pinned ? this.unpin() : this.pin(),
+          hideIf: this.isRecentList,
+        },
+        { type: "divider", hideIf: this.isRecentList },
+        {
+          name: "Share",
+          slug: 'share',
+          handler: this.share,
+          hideIf: !this.isCloud || !this.savedConnection || !this.savedConnection.id || this.isPersonal,
         },
         {
           name: "Duplicate",
@@ -169,20 +233,30 @@ export default {
           name: `Copy ${this.connectionType}`,
           handler: this.copyUrl
         },
+        { type: "divider" },
         {
-          name: "Remove",
+          name: "Rename",
+          slug: 'rename',
+          handler: () => {
+            this.rename = true;
+          },
+          hideIf: this.isRecentList || !canWrite,
+        },
+        {
+          name: "Move",
+          handler: () => {
+            this.trigger(AppEvent.openMoveFileModal, {
+              type: "connection",
+              value: this.config,
+            });
+          },
+          hideIf: this.isRecentList || this.folders.length === 0,
+        },
+        {
+          name: "Delete",
           handler: this.remove
         },
-      ].filter(v => v)
-
-      if (this.isCloud) {
-        options.push(...[
-          {
-            type: 'divider'
-          },
-          ...this.moveToOptions
-        ])
-      }
+      ].filter(({ hideIf }) => !hideIf)
 
       this.$bks.openMenu({
         event,
@@ -190,32 +264,18 @@ export default {
         options
       })
     },
-    async moveItem({ item, option }) {
-      try {
-        const folder = option.folder
-        if (!folder || !folder.id) return
-        const updated = _.clone(item)
-        updated.connectionFolderId = folder.id
-        await this.$store.dispatch('data/connections/save', updated)
-      } catch(ex) {
-        this.$noty.error(`Move Error: ${ex.message}`)
-        console.error(ex)
-      }
-    },
     async click() {
       if (this.savedConnection) {
         this.$emit('edit', this.savedConnection)
       } else {
-        const editable = await this.$store.dispatch('data/connections/clone', this.config)
-        this.$emit('edit', editable)
+        this.$emit('edit', this.config)
       }
     },
     async doubleClick() {
       if (this.savedConnection) {
         this.$emit('doubleClick', this.savedConnection)
       } else {
-        const editable = await this.$store.dispatch('data/connections/clone', this.config)
-        this.$emit('doubleClick', editable)
+        this.$emit('doubleClick', this.config)
       }
     },
     remove() {
@@ -224,9 +284,15 @@ export default {
     duplicate() {
       this.$emit('duplicate', this.config)
     },
+    share() {
+      this.trigger(AppEvent.openShareModal, {
+        id: this.savedConnection.id,
+        module: "data/connections",
+      });
+    },
     async copyUrl() {
       try {
-        await this.$copyText(this.$bks.buildConnectionString(this.config))
+        await this.$copyText(this.$bks.buildConnectionString(this.displayConfig))
         this.$noty.success(`The ${this.connectionType} was successfully copied!`)
       } catch (err) {
         this.$noty.success(`The ${this.connectionType} could not be copied!`)
@@ -237,8 +303,46 @@ export default {
     },
     unpin() {
       this.$store.dispatch('pinnedConnections/remove', this.config);
-    }
+    },
+    async submitRename(name) {
+      if (!name || name === this.label) {
+        this.rename = false
+        return
+      }
+      try {
+        const updated = { ...this.savedConnection, name }
+        await this.$store.dispatch('data/connections/save', updated)
+      } catch (ex) {
+        this.$noty.error(`Rename error: ${ex.userMessage ?? ex.message}`)
+      } finally {
+        this.rename = false
+      }
+    },
   }
 
 }
 </script>
+<style lang="scss" scoped>
+.list-item .list-item-btn .connection-title {
+  min-width: 0;
+
+  .title {
+    position: relative;
+    width: 100%;
+    overflow: visible;
+  }
+
+  .editable-text {
+    width: 100%;
+  }
+}
+
+/** --depth is from Tree.vue */
+.list-group .list-item .list-item-btn {
+  padding-left: calc(var(--depth) * 1.15rem);
+}
+
+.connection-label {
+  margin-left: 0.5rem;
+}
+</style>

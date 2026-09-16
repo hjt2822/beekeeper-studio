@@ -5,7 +5,7 @@
   >
     <h3
       class="dialog-c-title"
-      v-if="this.connection.server.config.client === 'cassandra'"
+      v-if="['cassandra', 'scylladb'].includes(this.connectionType)"
     >
       Add Keyspace
     </h3>
@@ -39,7 +39,7 @@
     >
       <label
         for="addDatabaseCharset"
-        v-if="this.connection.server.config.client === 'cassandra'"
+        v-if="['cassandra', 'scylladb'].includes(this.connectionType)"
       >
         Select Replication Strategy
       </label>
@@ -96,7 +96,6 @@
   import { mapState } from 'vuex';
 
   export default {
-    props: [],
     data() {
       return {
         charsets: [],
@@ -108,7 +107,7 @@
       }
     },
     computed: {
-      ...mapState(['connection'])
+      ...mapState(['connection', 'connectionType'])
     },
     async mounted(){
       this.charsets = await this.connection.listCharsets();
@@ -123,9 +122,9 @@
       },
       async save() {
         try {
-          await this.connection.createDatabase(this.databaseName, this.selectedCharset, this.selectedCollation);
+          const createdDb = await this.connection.createDatabase(this.databaseName, this.selectedCharset, this.selectedCollation);
           this.$noty.success('The database was created')
-          this.$emit('databaseCreated', this.databaseName)
+          this.$emit('databaseCreated', createdDb)
         } catch (err) {
           this.error = `The database could not be created: ${err.message}"`
         }

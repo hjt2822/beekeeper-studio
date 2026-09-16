@@ -1,5 +1,5 @@
 import { defineConfig } from 'vite';
-import vue from '@vitejs/plugin-vue2';
+import vue from 'vite-ng-plugin-vue2';
 import path from 'path'
 import commonjs from 'vite-plugin-commonjs'
 
@@ -16,14 +16,23 @@ export default defineConfig({
   plugins: [vue(), commonjs()],
   base: '/', // Set the base URL for the app
   optimizeDeps: {
-    exclude: []
-  },
+    exclude: [
+      // Exclude native modules from optimization
+      // Without this, the build fails :(
+      'cpu-features',
+      'ssh2',
+      'kerberos',
+      'better-sqlite3',
+      'oracledb'
+    ]
+},
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
       "@commercial": path.resolve(__dirname, "./src-commercial"),
       "@shared": path.resolve(__dirname, "./src/shared"),
       "assets": path.resolve(__dirname, './src/assets'),
+      "@bksLogger": path.resolve(__dirname, './src/lib/log/rendererLogger')
     },
   },
   build: {
@@ -39,6 +48,7 @@ export default defineConfig({
   },
   server: {
     port: 3003, // Development server port
+    strictPort: true, // Fail loudly if 3003 is taken (e.g. a stale dev server) instead of silently using another port
     // open: './src/index.html'
   }
 });

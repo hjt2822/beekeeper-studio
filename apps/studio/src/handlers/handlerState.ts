@@ -1,8 +1,10 @@
 import { IConnection } from "@/common/interfaces/IConnection";
+import { CloudClient } from "@/lib/cloud/CloudClient";
 import { BasicDatabaseClient } from "@/lib/db/clients/BasicDatabaseClient";
 import { CancelableQuery } from "@/lib/db/models";
 import { IDbConnectionPublicServer } from "@/lib/db/serverTypes";
 import { Export } from "@/lib/export";
+import ImportClass from "@/lib/import"
 import { SqlGenerator } from "@shared/lib/sql/SqlGenerator";
 import { ChildProcessWithoutNullStreams } from "child_process";
 import { MessagePortMain } from "electron";
@@ -11,7 +13,7 @@ import fs from "fs";
 import tmp from 'tmp';
 
 export interface TempFile {
-  fileObject: tmp.FileSyncObject,
+  fileObject: tmp.FileResult,
   fileHandle: fs.promises.FileHandle
 }
 
@@ -19,19 +21,24 @@ class State {
   port: MessagePortMain = null
   server: IDbConnectionPublicServer = null;
   usedConfig: IConnection = null;
-  connection: BasicDatabaseClient<any> = null;
+  connection: BasicDatabaseClient<any, any> = null;
+  transactionTimeouts: Map<number, NodeJS.Timeout> = new Map();
   database: string = null;
   username: string = null;
   queries: Map<string, CancelableQuery> = new Map();
   generator: SqlGenerator = null;
   exports: Map<string, Export> = new Map();
+  imports: Map<string, ImportClass> = new Map();
   backupProc: ChildProcessWithoutNullStreams = null;
+
+  cloudClient: CloudClient = null;
+  workspaceId: number = null;
 
   connectionAbortController: AbortController = null;
 
   // enums
-  enumsInitialized: boolean = false;
-  
+  enumsInitialized = false;
+
   private enumWatcher: FSWatcher = null;
 
   set watcher(value: FSWatcher) {
@@ -54,7 +61,21 @@ export function newState(id: string): void {
   states.set(id, new State());
 }
 
-export function removeState(id: string): void {
+export async function removeState(id: string): Promise<void> {
+  const state = states.get(id);
+  if (!state) return;
+  for (const file of state.tempFiles.values()) {
+    if (file.fileHandle) {
+      await file.fileHandle.close().catch();
+    }
+
+    if (file.fileObject) {
+      try {
+        file.fileObject.removeCallback()
+      } catch {}
+    }
+  }
+  state.tempFiles.clear();
   states.delete(id);
 }
 
@@ -70,6 +91,7 @@ export const errorMessages = {
 
 export function getDriverHandler(name: string) {
   return async function({sId }: { sId: string }): Promise<any> {
+    checkConnection(sId);
     return await state(sId).connection[name]();
   }
 }

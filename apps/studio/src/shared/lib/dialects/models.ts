@@ -1,11 +1,22 @@
 import _ from 'lodash'
 import CodeMirror from 'codemirror'
+import { Version } from '@/common/version'
+import { ExtendedTableColumn } from '@/lib/db/models'
 
-const communityDialects = ['postgresql', 'sqlite', 'sqlserver', 'mysql', 'redshift', 'bigquery'] as const
-const ultimateDialects = ['oracle', 'cassandra', 'firebird'] as const
+const communityDialects = ['postgresql', 'greengage', 'sqlite', 'sqlserver', 'mysql', 'starrocks', 'redshift', 'bigquery', 'bedrock', 'redis'] as const
+const ultimateDialects = ['oracle', 'cassandra', 'firebird', 'clickhouse', 'mongodb', 'duckdb', 'sqlanywhere', 'surrealdb', 'trino', 'dynamodb', 'snowflake'] as const
 
 export const Dialects = [...communityDialects, ...ultimateDialects] as const
 
+interface ImportDefaultDataTypes {
+  stringType?: string
+  longStringType?: string
+  dateType?: string
+  booleanType?: string
+  integerType?: string
+  numberType?: string
+  defaultType: string
+}
 
 export const SpecialTypes = ['autoincrement']
 export type Dialect = typeof Dialects[number]
@@ -17,13 +28,21 @@ export function dialectFor(s: string): Dialect | null {
   switch (s) {
     case 'cockroachdb':
       return 'postgresql'
+    case 'greengage':
+      return 'greengage'
     case 'mariadb':
     case 'tidb':
       return 'mysql'
+    case 'starrocks':
+      return 'starrocks';
     case 'libsql':
       return 'sqlite'
     case 'mssql':
       return 'sqlserver'
+    case 'scylladb':
+      return 'cassandra'
+    case 'bedrock':
+      return 'sqlite'
     default:
       return Dialects.find((d) => d === s) || null
   }
@@ -32,7 +51,9 @@ export function dialectFor(s: string): Dialect | null {
 
 export const DialectTitles: {[K in Dialect]: string} = {
   postgresql: "Postgres",
+  greengage: "GreengageDB",
   mysql: "MySQL",
+  starrocks: "StarRocks",
   sqlserver: "SQL Server",
   redshift: "Amazon Redshift",
   sqlite: "SQLite",
@@ -40,6 +61,16 @@ export const DialectTitles: {[K in Dialect]: string} = {
   bigquery: "BigQuery",
   firebird: "Firebird",
   oracle: "Oracle Database",
+  duckdb: "DuckDB",
+  clickhouse: "ClickHouse",
+  mongodb: "MongoDB",
+  sqlanywhere: 'SqlAnywhere',
+  trino: 'Trino',
+  surrealdb: 'SurrealDB',
+  bedrock: 'Bedrock',
+  redis: 'Redis',
+  dynamodb: 'Amazon DynamoDB',
+  snowflake: 'Snowflake'
 }
 
 export const KnexDialects = ['postgres', 'sqlite3', 'mssql', 'redshift', 'mysql', 'oracledb', 'firebird', 'cassandra-knex']
@@ -47,22 +78,47 @@ export type KnexDialect = typeof KnexDialects[number]
 
 export function KnexDialect(d: Dialect): KnexDialect {
   if (d === 'sqlserver') return 'mssql'
+  if (d === 'sqlanywhere') return 'mssql';
   if (d === 'sqlite') return 'sqlite3'
   if (d === 'oracle') return 'oracledb'
   if (d === 'cassandra') return 'cassandra-knex'
+  if (d === 'greengage') return 'postgres'
   return d as KnexDialect
 }
 // REF: https://github.com/sql-formatter-org/sql-formatter/blob/master/docs/language.md#options
-export type FormatterDialect = 'postgresql' | 'mysql' | 'mariadb' | 'sql' | 'tsql' | 'redshift' | 'plsql' | 'db2' | 'sqlite'
+export type FormatterDialect = 'postgresql' | 'mysql' | 'mariadb' | 'sql' | 'tsql' | 'redshift' | 'plsql' | 'db2' | 'sqlite' | 'trino' | 'snowflake'
 export function FormatterDialect(d: Dialect): FormatterDialect {
   if (!d) return 'mysql'
   if (d === 'sqlserver') return 'tsql'
   if (d === 'sqlite') return 'sqlite'
   if (d === 'oracle') return 'plsql'
   if (d === 'postgresql') return 'postgresql'
+  if (d === 'greengage') return 'postgresql'
   if (d === 'redshift') return 'redshift'
   if (d === 'cassandra') return 'sql'
+  if (d === 'duckdb') return 'sql'
+  if (d === 'trino') return 'trino'
+  if (d === 'surrealdb') return 'sql'
+  if (d === 'snowflake') return 'snowflake'
   return 'mysql' // we want this as the default
+}
+
+// formatOptionsFor — returns sql-formatter config. For dialects sql-formatter
+// knows, returns `{ language }`; for custom dialects (PartiQL) returns
+// `{ dialect: <DialectOptions> }`. Consume via `safeSqlFormat`, which dispatches
+// to either `format` or `formatDialect`.
+import type { DialectOptions } from 'sql-formatter'
+import { partiqlDialect } from './partiqlFormatter'
+
+export type FormatterOptions =
+  | { language: FormatterDialect }
+  | { dialect: DialectOptions }
+
+export function formatOptionsFor(d: Dialect): FormatterOptions {
+  if (d === 'dynamodb') {
+    return { dialect: partiqlDialect }
+  }
+  return { language: FormatterDialect(d) }
 }
 
 
@@ -85,18 +141,30 @@ export class ColumnType {
 }
 
 export interface DialectData {
-  columnTypes: ColumnType[],
-  constraintActions: string[]
-  wrapIdentifier: (s: string) => string
-  editorFriendlyIdentifier: (s: string) => string
-  escapeString: (s: string, quote?: boolean) => string
-  wrapLiteral: (s: string) => string
-  unwrapIdentifier: (s: string) => string
-  textEditorMode: CodeMirror.EditorConfiguration['mode']
+  queryDialectOverride?: string,
+  columnTypes?: ColumnType[],
+  constraintActions?: string[]
+  importDataType?: ImportDefaultDataTypes
+  wrapIdentifier?: (s: string) => string
+  editorFriendlyIdentifier?: (s: string) => string
+  escapeString?: (s: string, quote?: boolean) => string
+  wrapLiteral?: (s: string) => string
+  unwrapIdentifier?: (s: string) => string
+  textEditorMode?: CodeMirror.EditorConfiguration['mode']
   defaultSchema?: string
-  usesOffsetPagination: boolean
+  usesOffsetPagination?: boolean
   requireDataset?: boolean,
+  disallowedSortColumns?: string[],
+  rawFilterPlaceholder?: string,
+  /** Is it called "sql" or "code" in this dialect? */
+  sqlLabel: "SQL" | "code";
   disabledFeatures?: {
+    manualCommit?: boolean
+    resultEditing?: boolean
+    rawFilters?: boolean
+    builderFilters?: boolean
+    shell?: boolean
+    queryEditor?: boolean
     informationSchema?: {
       extra?: boolean
     }
@@ -107,6 +175,7 @@ export interface DialectData {
       dropColumn?: boolean
       renameColumn?: boolean
       alterColumn?: boolean
+      alterDefault?: boolean
       multiStatement?: boolean
       addConstraint?: boolean
       dropConstraint?: boolean
@@ -115,6 +184,7 @@ export interface DialectData {
       renameSchema?: boolean
       renameTable?: boolean
       renameView?: boolean
+      reorderColumn?: boolean
     },
     triggers?: boolean,
     relations?: boolean,
@@ -123,8 +193,11 @@ export interface DialectData {
       onDelete?: boolean
     }
     index?: {
-      desc?: boolean
+      id?: boolean,
+      desc?: boolean,
+      primary?: boolean
     }
+    primary?: boolean // for mongo
     defaultValue?: boolean
     nullable?: boolean
     createIndex?: boolean
@@ -134,23 +207,40 @@ export interface DialectData {
     truncateElement?: boolean
     exportTable?: boolean
     createTable?: boolean
+    dropTable?: boolean
+    dropSchema?: boolean
     collations?: boolean
     importFromFile?: boolean,
     headerSort?: boolean,
     duplicateTable?: boolean,
     export?: {
-      sql?: boolean
+      sql?: boolean,
+      stream?: boolean
     }
     schema?: boolean
+    multipleDatabases?: boolean
+    addDatabase?: boolean
+    generatedColumns?: boolean
+    transactions?: boolean
+    chunkSizeStream?: boolean
+    binaryColumn?: boolean
+    initialSort?: boolean
+    sqlCreate?: boolean
+    foreignKeys?: boolean
+    compositeKeys?: boolean    // Whether composite keys are supported
+    schemaValidation?: boolean  // Whether schema validation features are disabled
+    readOnlyPrimaryKeys?: boolean  // Whether primary keys are read-only
   },
   notices?: {
     infoSchema?: string
     infoIndexes?: string
     infoRelations?: string
     infoTriggers?: string
+    infoCreateTable?: string
     tableTable?: string
     query?: string
   },
+  versionWarnings?: { minVersion?: Version, warning?: string }[]
   defaultColumnType?: string
   charsets?: string[]|null
   boolean?: {
@@ -210,9 +300,13 @@ export interface Schema {
 }
 
 export interface SchemaItemChange {
-  changeType: 'columnName' | 'dataType' | 'nullable' | 'defaultValue' | 'comment' | 'extra'
+  changeType: 'columnName' | 'dataType' | 'nullable' | 'defaultValue' | 'comment' | 'extra' | 'position'
   columnName: string
   newValue: string | boolean | null
+}
+
+export interface CreateTableSpec {
+  table: string
 }
 
 export interface AlterTableSpec {
@@ -222,6 +316,7 @@ export interface AlterTableSpec {
   alterations?: SchemaItemChange[]
   adds?: SchemaItem[]
   drops?: string[]
+  reorder? : { newOrder: ExtendedTableColumn[], oldOrder: ExtendedTableColumn[] } | null
 }
 
 export interface PartitionExpressionChange {
@@ -241,9 +336,11 @@ export interface AlterPartitionsSpec {
   detaches?: string[]
 }
 
+export const AdditionalMongoOrders = [ '2d', '2dsphere', 'text', 'geoHaystack', 'hashed' ];
+
 export interface IndexColumn {
   name: string
-  order: 'ASC' | 'DESC'
+  order?: 'ASC' | 'DESC' | '2d' | '2dsphere' | 'text' | 'geoHaystack' | 'hashed' | number // after DESC is for mongo only
   prefix?: number | null // MySQL Only
 }
 
@@ -285,12 +382,13 @@ export type DialectConfig = {
 
 
 export interface TableKey {
+  isComposite: boolean;
   toTable: string;
   toSchema: string;
-  toColumn: string;
+  toColumn: string | string[];
   fromTable: string;
   fromSchema: string;
-  fromColumn: string;
+  fromColumn: string | string[];
   constraintName?: string;
   onUpdate?: string;
   onDelete?: string;

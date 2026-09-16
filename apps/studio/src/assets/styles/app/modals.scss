@@ -13,31 +13,13 @@
     }
   }
 
-  &.upgrade-modal {
-    .dialog-c-title {
-      font-size: 1.2em;
-    }
-    .checkbox-wrapper {
-      margin-left: auto;
-      margin-right: auto;
-      ul.check-list {
-        padding-left: 0;
-        li {
-          padding-bottom: 10px;
-          &:before {
-            font-family: "Material Icons";
-            content: "\e5ca";
-            margin-right: 0.5rem;
-            margin-bottom: -10px;
-            color: $brand-success;
-          }
-          list-style: none;
-        }
-      }
-    }
+  // The vendor stylesheet forces `width: 100% !important` on every modal, so
+  // vue-js-modal's width prop can't reach it — cap the width here instead.
+  &.upgrade-modal .v--modal {
+    max-width: 520px;
   }
 
-  &.confirmation-modal, &.sql-files-import-modal, &.wait-sso-modal {
+  &.sql-files-import-modal, &.wait-sso-modal, &.connection-files-import-modal {
     .v--modal {
       width: auto !important;
       min-height: 0px;
@@ -85,6 +67,61 @@
     .vue-dialog-buttons {
       padding-bottom: 2rem;
       justify-content: center;
+    }
+  }
+
+  // PIN Modal Styles
+  &.create-pin-modal, &.input-pin-modal, &.update-pin-modal {
+    .v--modal {
+      width: 31.25rem;
+      min-height: 0px;
+    }
+
+    .description {
+      margin-bottom: 0.5rem;
+
+      p {
+        margin: 0;
+        color: var(--text-light);
+        line-height: 1.5;
+        font-size: 0.9rem;
+      }
+    }
+
+  }
+
+  &.super-formatter-modal {
+    .v--modal {
+      max-width: min(64rem, 70vw);
+      max-height: min(50rem, 90vh);
+      display: flex;
+      container-type: inline-size;
+
+      @container (max-width: 600px) {
+        .BksSuperFormatter {
+          grid-template-columns: auto;
+          grid-template-rows: 1fr 1fr 1.75rem;
+
+          .formatter-buttons {
+            grid-column-start: initial;
+          }
+        }
+      }
+    }
+    .dialog-content {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+    }
+    & .dialog-c-title {
+      display: flex;
+      padding-right: 0 !important;
+      justify-content: space-between;
+      align-items: start;
+      & p {
+        margin: 0;
+        padding: .5rem 0 0 0;
+      }
     }
   }
 }

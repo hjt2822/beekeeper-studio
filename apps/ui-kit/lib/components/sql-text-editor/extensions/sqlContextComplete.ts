@@ -1,0 +1,268 @@
+/**
+ * A CodeMirror extension that provides SQL-aware autocomplete suggestions.
+ * – Triggers completion after typing SQL keywords like SELECT, FROM, JOIN, etc.
+ * – Offers column names based on the current query context or table aliases.
+ * – Allows you to inject a custom columnsGetter to lazy load columns.
+ * A CodeMirror extension that triggers completion after typing SQL keywords
+ * like SELECT, FROM, JOIN, etc.
+ *
+ * Usage:
+ *   import { sql } from "./customSql";
+ *   import { sqlContextComplete, sqlCompletionSource } from "./sqlContextComplete";
+ *   import { sqlContextComplete } from "./sqlContextComplete";
+ *
+ *   // Register the extensions
+ *   const extensions = [
+ *    sql(), // NOTE: must use sql extension from ./customSql.ts
+ *    sqlContextComplete(), // trigger completion while typing
+ *    sqlCompletionSource((entity) => {
+ *      return ["column1", "column2", "column3"];
+ *    }) // custom columnsGetter
+ *   ]
+ */
+
+import { Completion, startCompletion, closeCompletion } from "@codemirror/autocomplete";
+import { EditorState, Extension, Text } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { schemaCompletionFilter, completeConfig } from "./vendor/@codemirror/lang-sql/src/complete";
+import { Entity } from "../../types";
+import { columnsToCompletions, getAliases } from "../utils";
+import { configFacet, entities } from "./customSql";
+import { syntaxTree } from "@codemirror/language";
+import { matchEntity } from "../../../utils/entity";
+
+type ColumnsGetter = (
+  entity: Entity,
+  options: Completion[]
+) => string[] | Promise<string[]>;
+
+function sqlContextComplete(): Extension {
+  return [
+    EditorView.updateListener.of((update) => {
+      // Check if typing occurred
+      if (update.docChanged) {
+        let spaceInserted = false;
+
+        update.changes.iterChanges(
+          (_fromA: any, _toA: any, _fromB: any, _toB: any, inserted: any) => {
+            if (inserted.length === 1 && inserted.text[0] === " ") {
+              spaceInserted = true;
+            }
+          }
+        );
+
+        if (spaceInserted) {
+          const cursor = update.state.selection.main.head;
+          const line = update.state.doc.lineAt(cursor);
+          const textBefore = line.text.slice(0, cursor - line.from);
+
+          // Check if we just typed a space after FROM or JOIN
+          if (/\b(FROM|JOIN)\s$/i.test(textBefore)) {
+            // Trigger autocomplete
+            startCompletion(update.view);
+          } else {
+            // Close autocomplete if open (e.g., after typing table name)
+            closeCompletion(update.view);
+          }
+        }
+      }
+    }),
+  ];
+}
+
+function sqlCompletionSource(columnsGetter: ColumnsGetter) {
+  return [
+    schemaCompletionFilter.of(async (context, source, options) => {
+      const { parents, aliases } = source;
+
+      // If the builtin sql completion can't find the table name
+      if (parents.length === 0) {
+        try {
+          const columns = await loadColumnsFromQueryContext(
+            context.state,
+            context.pos,
+            columnsGetter
+          );
+          const { dialect, quoteIdentifiers, quoteCharacter } = context.state.facet(completeConfig);
+          options = options.concat(columnsToCompletions(columns, dialect, quoteIdentifiers, quoteCharacter));
+        } catch (e) {
+          console.error(e);
+        }
+        return options;
+      }
+
+      // Here, the builtin sql completion found the table name
+
+      // Get last segment (table or alias)
+      const last = parents[parents.length - 1];
+      const path = aliases?.[last];
+      let table = last;
+      let schema: string | undefined;
+      // let alias: string | undefined;
+
+      if (path) {
+        // Resolve alias
+        // alias = last;
+        if (path.length === 2) {
+          schema = path[0];
+          table = path[1];
+        } else {
+          table = path[0];
+        }
+      } else if (parents.length >= 2) {
+        // Schema-qualified table without an alias (e.g. `public.users.|`)
+        // The segment before `last` is the schema.
+        schema = parents[parents.length - 2];
+      }
+
+      const entity = getEntity(context.state, table, schema);
+
+      try {
+        const columns = (await columnsGetter(entity, options)) || [];
+        const { dialect, quoteIdentifiers, quoteCharacter } = context.state.facet(completeConfig);
+        options = options.concat(columnsToCompletions(columns, dialect, quoteIdentifiers, quoteCharacter));
+      } catch (e) {
+        console.error(e);
+      }
+
+      return options;
+    }),
+  ];
+}
+
+/**
+ * Identify relevant tables from query context at cursor position and load columns
+ */
+async function loadColumnsFromQueryContext(
+  state: EditorState,
+  cursor: number,
+  columnsGetter: ColumnsGetter
+): Promise<string[]> {
+  const doc = state.doc;
+  const line = doc.lineAt(cursor);
+
+  // Look back up to 5 lines so the position check sees keywords like
+  // SELECT/WHERE/ORDER BY even when the cursor is on a different line.
+  const lookbackLine = Math.max(1, line.number - 5);
+  const lookbackStart = doc.line(lookbackLine).from;
+  const textBeforeCursor = doc.sliceString(lookbackStart, cursor);
+
+  if (!isColumnCompletionPosition(textBeforeCursor)) {
+    return [];
+  }
+
+  const tables = getTablesFromContext(state, doc, line, cursor);
+
+  // Request columns for all tables and combine results
+  const columns = [];
+  for (const tableName of tables) {
+    const gotColumns = await columnsGetter(getEntity(state, tableName), []);
+    if (gotColumns) {
+      columns.push(...gotColumns);
+    }
+  }
+  return columns;
+}
+
+/**
+ * Check if cursor is at a position where column completion makes sense
+ */
+function isColumnCompletionPosition(textBeforeCursor: string): boolean {
+  // If we're directly after FROM/JOIN (i.e. in a table-name position),
+  // the cursor is not on a column — bail out so we don't suggest columns
+  // while the user is typing a table identifier.
+  // Matches FROM/JOIN followed by whitespace and an optional partial
+  // identifier (including an opening quote/bracket) at end of input.
+  if (/\b(?:FROM|JOIN)\s+["`\[]?[a-zA-Z0-9_]*$/i.test(textBeforeCursor)) {
+    return false;
+  }
+
+  const completionPatterns = [
+    /\bSELECT\s+/i, // After SELECT (with or without trailing content)
+    /\bSELECT[\s\S]+,\s*/i, // After comma in SELECT (may span lines)
+    /\b(WHERE|AND|OR)\s+/i, // After WHERE/AND/OR
+    /\b(ORDER\s+BY|GROUP\s+BY|HAVING)\s+/i, // After ORDER BY/GROUP BY/HAVING
+    /\bJOIN[\s\S]+\bON\s+/i, // After JOIN...ON (may span lines)
+  ];
+
+  return completionPatterns.some((pattern) => pattern.test(textBeforeCursor));
+}
+
+/**
+ * Collect all tables from the current SQL context
+ */
+function getTablesFromContext(
+  state: EditorState,
+  doc: Text,
+  line: any,
+  cursor: number
+): Set<string> {
+  // Get the statement node and any table aliases
+  const node = syntaxTree(state).resolveInner(cursor, -1);
+  const aliases = getAliases(doc, node);
+
+  // Get nearby context (5 lines before and after)
+  const contextStart = Math.max(0, line.number - 5);
+  const contextEnd = Math.min(doc.lines, line.number + 5);
+  const contextText = getContextText(doc, contextStart, contextEnd);
+
+  // Collect tables from different sources
+  const tables = new Set<string>();
+
+  // Add tables from aliases
+  if (aliases) {
+    for (const [_, tablePath] of Object.entries(aliases)) {
+      if (Array.isArray(tablePath) && tablePath.length > 0) {
+        tables.add(tablePath[0]);
+      }
+    }
+  }
+
+  // Add tables from FROM and JOIN clauses
+  // Supports unquoted, "double quotes", `backticks`, and [brackets]
+  const tableRegex = /\b(?:FROM|JOIN)\s+(?:"([^"]+)"|`([^`]+)`|\[([^\]]+)\]|([a-zA-Z0-9_]+))/gi;
+  let m: RegExpExecArray | null;
+  while ((m = tableRegex.exec(contextText)) !== null) {
+    const tableName = m[1] || m[2] || m[3] || m[4];
+    if (tableName) tables.add(tableName);
+  }
+
+  return tables;
+}
+
+/**
+ * Extract text from multiple lines for context analysis
+ */
+function getContextText(doc: Text, startLine: number, endLine: number): string {
+  let contextText = "";
+  for (let i = startLine; i <= endLine; i++) {
+    if (i > 0 && i <= doc.lines) {
+      contextText += doc.line(i).text + "\n";
+    }
+  }
+  return contextText;
+}
+
+function getEntity(state: EditorState, table: string, schema?: string) {
+  const config = state.facet(configFacet);
+
+  return (
+    state.field(entities).find((e) => {
+      if (
+        e.entityType !== "table" &&
+        e.entityType !== "view" &&
+        e.entityType !== "materialized-view"
+      ) {
+        return false;
+      }
+
+      return matchEntity(
+        e,
+        { entityType: e.entityType, name: table, schema },
+        config.defaultSchema
+      );
+    }) ?? { schema, entityType: "table", name: table }
+  );
+}
+
+export { sqlContextComplete, sqlCompletionSource, ColumnsGetter };

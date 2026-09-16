@@ -8,19 +8,20 @@ import fs from "fs";
 import { LibSQLClient } from "@commercial/backend/lib/db/clients/libsql";
 import { createServer } from "@commercial/backend/lib/db/server";
 import knex from "knex";
-import Client_Libsql from "@libsql/knex-libsql";
-import Client_BetterSQLite3 from "knex/lib/dialects/better-sqlite3/index";
+import Client_Libsql from "@shared/lib/knex-libsql";
+import { TestOrmConnection } from "@tests/lib/TestOrmConnection";
 
 const timeoutDefault = 5000
 
+// FIXME (azmi): remove arrayMode from utilOpions once it's fixed
 const TEST_VERSIONS = [
-  { mode: "memory", readOnly: false },
-  { mode: "file", readOnly: false },
-  { mode: "file", readOnly: true },
-  { mode: "remote", readOnly: true },
-  { mode: "remote", readOnly: false },
-  { mode: "replica", readOnly: false },
-  { mode: "replica", readOnly: true },
+  { mode: "memory", readOnly: false, arrayMode: true },
+  { mode: "file", readOnly: false, arrayMode: true },
+  { mode: "file", readOnly: true, arrayMode: true },
+  { mode: "remote", readOnly: true, arrayMode: false },
+  { mode: "remote", readOnly: false, arrayMode: false },
+  { mode: "replica", readOnly: false, arrayMode: true },
+  { mode: "replica", readOnly: true, arrayMode: true },
 ] as const;
 
 function testWith(options: typeof TEST_VERSIONS[number]) {
@@ -39,7 +40,10 @@ function testWith(options: typeof TEST_VERSIONS[number]) {
     beforeAll(async () => {
       let dbPath: string;
       let knexFilename: string;
-      const utilOptions: Options = { dialect: "sqlite" };
+      const utilOptions: Options = {
+        dialect: "sqlite",
+        supportsArrayMode: options.arrayMode,
+      };
       const config = {
         client: "libsql",
         readOnlyMode: options.readOnly,
@@ -55,7 +59,7 @@ function testWith(options: typeof TEST_VERSIONS[number]) {
         knexFilename = ":memory:";
       } else {
         container = await new GenericContainer(
-          "ghcr.io/tursodatabase/libsql-server:latest"
+          "ghcr.io/tursodatabase/libsql-server:v0.24.32"
         )
           .withName(`libsql${options.readOnly ? "-readOnly" : ""}`)
           .withExposedPorts(8080)
@@ -71,16 +75,14 @@ function testWith(options: typeof TEST_VERSIONS[number]) {
       }
 
       utilOptions.knex = knex({
-        client:
-          options.mode !== "memory"
-            ? (Client_Libsql as any)
-            : class extends Client_BetterSQLite3 {
-                async acquireRawConnection() {
-                  // @ts-expect-error not fully typed
-                  return util.connection._rawConnection;
-                }
-              },
-        connection: { filename: knexFilename },
+        client: Client_Libsql,
+        connection:
+          options.mode === "memory"
+            ? // share the client's in-memory db (a fresh :memory: connection
+              // would be empty). Resolved lazily — the client isn't connected yet.
+              // @ts-expect-error not fully typed
+              { connectionInstance: () => util.connection._rawConnection }
+            : { filename: knexFilename },
       });
 
       util = new DBTestUtil(config, dbPath, utilOptions);
@@ -285,6 +287,14 @@ function testWith(options: typeof TEST_VERSIONS[number]) {
         return { ...result[0] };
       };
     }
+
+    if (options.mode !== 'memory') {
+      describe("Param tests", () => {
+        it("Should be able to handle positional (?) params", async () => {
+          await util.paramTest(['?']);
+        })
+      })
+    }
   });
 }
 
@@ -298,7 +308,7 @@ function testReplica(readOnly = false) {
     replicaDir = tmp.dirSync();
 
     container = await new GenericContainer(
-      "ghcr.io/tursodatabase/libsql-server:latest"
+      "ghcr.io/tursodatabase/libsql-server:v0.24.32"
     )
       .withName(`libsql-replica-target`)
       .withExposedPorts(8080)
@@ -326,11 +336,14 @@ function testReplica(readOnly = false) {
       },
     }).createConnection(path.join(replicaDir.name, "test.db")) as LibSQLClient;
 
+    await TestOrmConnection.connect()
+
     await remoteClient.connect();
     await replicaClient.connect();
   });
 
   afterAll(async () => {
+    await TestOrmConnection.disconnect()
     await remoteClient.disconnect();
     await replicaClient.disconnect();
     await container.stop();

@@ -1,9 +1,9 @@
 ---
-title: Browse and Edit Table Data
+title: Table View
 summary: "View, search, and modify your database table data using our built-in table explorer."
 old_url: "https://docs.beekeeperstudio.io/docs/creating-tables"
+icon: material/table
 ---
-
 
 Double click a table in the left sidebar to open an Excel-like interface for viewing and editing the data. We call this the **Table View**
 
@@ -23,9 +23,10 @@ This view allows you to:
 The table view provides a spreadsheet-like experience for selecting, copying, and pasting data. Beekeeper supports many spreadsheet-like interaction primitives.
 
 1. Select arbitrary ranges of cells using click & drag, ctrl-click, and shift-click.
-2. Hide columns by right clicking the header and choosing `hide column`
-3. Resize columns, either one at a time, or together
-4. Copy and paste ranges of cells from Excel or Google Sheets with native keyboard shortcuts
+2. Clear selected cell ranges and set them to `NULL` by pressing `backspace`.
+3. Hide columns by right clicking the header and choosing `hide column`
+4. Resize columns, either one at a time, or together
+5. Copy and paste ranges of cells from Excel or Google Sheets with native keyboard shortcuts
 
 
 ## Filtering The Table View
@@ -75,7 +76,7 @@ In general, if you don't have a primary key on your table there is **no reliable
 
 #### A not on secret/internal row identifiers
 
-Some databases provide an internal identifier for rows, but they're not always stable. 
+Some databases provide an internal identifier for rows, but they're not always stable.
 
 The PostgreSQL [ctid](https://www.postgresql.org/docs/current/ddl-system-columns.html#DDL-SYSTEM-COLUMNS-CTID) identifies the physical location of a row, but can change during a vaccum, making it unsuitable as a real row identifier in certain situations.
 
@@ -111,8 +112,9 @@ To commit a change, click the `Apply` in the bottom right of the screen. To disc
 
 You can clone, delete, and create new rows of data pretty easily.
 
-Right click a row (or multiple rows) to delete or clone.
-Click the `+` button at the bottom right to add a new row. New rows will be added to the end of the table, even though they appear at the top of the UI for convenience.
+- **Delete or Clone**: Right-click a row (or multiple selected rows) to delete or clone them.
+- **Add a Single Row**: Click the `+` button at the bottom right to add a new row. New rows will be added to the end of the table, even though they appear at the top of the UI for convenience.
+- **Paste as New Rows**: Copy multi-row data from Excel, Google Sheets, or another table, then right-click any cell and choose `Paste as new rows` (or press `ctrl+shift+v` / `cmd+shift+v`). Beekeeper Studio positionally maps the clipboard values to the visible table columns and stages the new rows at the end of the table.
 
 ## Copying Data
 
@@ -127,6 +129,10 @@ If you press the `copy` keyboard shortcut (`ctrl+c` or `cmd+c`), you will copy t
 Alternatively, right-click any cell to copy that row (or all selected cells) in a range of formats like CSV, JSON, and Markdown.
 
 ![Image Alt Tag](../assets/images/creating-tables-95.png)
+
+### Create IN Statement From Selection
+
+You can quickly generate a SQL `IN` clause from selected data in the table view. Select one or more cells in a column, then right-click and choose **Create IN Statement**. Beekeeper Studio will generate an `IN (...)` clause containing all the selected values, ready to paste into your SQL editor.
 
 ### Exporting the whole table
 

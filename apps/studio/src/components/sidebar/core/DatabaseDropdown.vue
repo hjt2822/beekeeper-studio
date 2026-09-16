@@ -1,9 +1,8 @@
 <template>
   <div class="fixed">
-    <div class="data-select-wrap">
-      <!-- FIXME: move this comparison to the DialectData -->
+    <div class="data-select-wrap" :class="{'disabled-db-dropdown': isRefreshing}">
       <p
-        v-if="this.connectionType === 'sqlite'"
+        v-if="!supportsMultipleDatabases"
         class="sqlite-db-name"
         :title="selectedDatabase"
       >
@@ -18,22 +17,24 @@
         placeholder="Select a database..."
         class="dropdown-search"
       />
-      <!-- FIXME: move this comparison to the DialectData -->
-      <a
-        v-if="this.connectionType !== 'sqlite'"
-        class="refresh"
-        @click.prevent="refreshDatabases"
-        :title="'Refresh Databases'"
-      >
-        <i class="material-icons">refresh</i>
-      </a>
-      <a
-        class="refresh"
-        @click.prevent="$modal.show('config-add-database')"
-        :title="'Add Database'"
-      >
-        <i class="material-icons">add</i>
-      </a>
+      <div class="db-actions">
+        <a
+          v-if="supportsMultipleDatabases"
+          class="refresh"
+          @click.prevent="refreshDatabases"
+          :title="'Refresh Databases'"
+        >
+          <i class="material-icons" :class="{'refreshing-db-icon': isRefreshing }">{{ isRefreshing ? 'sync' : 'refresh' }}</i>
+        </a>
+        <a
+          v-if="!usedConfig?.readOnlyMode && supportsAddDatabase"
+          class="refresh"
+          @click.prevent="$modal.show('config-add-database')"
+          :title="'Add Database'"
+        >
+          <i class="material-icons">add</i>
+        </a>
+      </div>
     </div>
     <portal to="modals">
       <modal
@@ -92,13 +93,14 @@
   import vSelect from 'vue-select'
   import {AppEvent} from '@/common/AppEvent'
   import AddDatabaseForm from "@/components/connection/AddDatabaseForm.vue"
-  import { mapActions, mapState } from 'vuex'
+  import { mapActions, mapState, mapGetters } from 'vuex'
 
   export default {
     props: [ ],
     data() {
       return {
         selectedDatabase: null,
+        isRefreshing: false,
         OpenIndicator: {
           render: createElement => createElement('i', {class: {'material-icons': true}}, 'arrow_drop_down')
         }
@@ -109,12 +111,21 @@
       AddDatabaseForm
     },
     methods: {
-      ...mapActions({refreshDatabases: 'updateDatabaseList'}),
-      ...mapState({ connectionType: 'connectionType' }),
+      ...mapActions({updateDatabaseList: 'updateDatabaseList'}),
+      async refreshDatabases() {
+        if (this.isRefreshing) {
+          return
+        }
+        this.isRefreshing = true
+        try {
+          await this.updateDatabaseList()
+        } finally {
+          this.isRefreshing = false
+        }
+      },
       async databaseCreated(db) {
         this.$modal.hide('config-add-database')
-        // FIXME: move this comparison to the DialectData
-        if (this.connectionType.match(/sqlite|firebird/)) {
+        if (this.dialect.disabledFeatures?.multipleDatabases) {
           const fileLocation = this.selectedDatabase.split('/')
           fileLocation.pop()
           const url = this.connectionType === 'sqlite' ? `${fileLocation.join('/')}/${db}.db` : `${fileLocation.join('/')}/${db}`
@@ -132,10 +143,17 @@
       this.selectedDatabase = this.currentDatabase
     },
     computed: {
+      supportsMultipleDatabases() {
+        return !this.dialectData.disabledFeatures?.multipleDatabases
+      },
+      supportsAddDatabase() {
+        return !this.dialectData.disabledFeatures?.addDatabase
+      },
       availableDatabases() {
         return _.without(this.dbs, this.selectedDatabase)
       },
-      ...mapState({currentDatabase: 'database', dbs: 'databaseList'}),
+      ...mapGetters(['dialect', 'dialectData']),
+      ...mapState({currentDatabase: 'database', dbs: 'databaseList', connectionType: 'connectionType', usedConfig: 'usedConfig'}),
     },
     watch: {
       currentDatabase(newValue) {
@@ -144,7 +162,8 @@
         }
       },
       selectedDatabase() {
-        if (this.selectedDatabase != this.currentDatabase) {
+        // mongodb doesn't actually create the db until a collection has been added
+        if (this.selectedDatabase != this.currentDatabase && (this.dbs.includes(this.selectedDatabase) || this.connectionType === 'mongodb')) {
           this.$emit('databaseSelected', this.selectedDatabase)
         }
       }
@@ -153,6 +172,37 @@
 </script>
 
 <style lang="scss" scoped>
+
+  .data-select-wrap {
+    position: relative;
+
+    .db-actions {
+      position: absolute;
+      right: 0;
+      display: flex;
+      align-items: center;
+      padding-right: 0.5rem;
+    }
+
+    .dropdown-search {
+      width: 100%;
+      padding-right: 3.5rem;
+    }
+  }
+
+  .disabled-db-dropdown {
+    pointer-events: none;
+
+    .refreshing-db-icon {
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+  }
+
   .sqlite-db-name {
     width: 90%;
     overflow: hidden;

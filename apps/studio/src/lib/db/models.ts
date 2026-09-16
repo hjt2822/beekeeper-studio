@@ -1,9 +1,11 @@
 import { IndexColumn, SchemaItem, TableKey } from "@shared/lib/dialects/models";
+import { BackupConfig } from "./models/BackupConfig";
 
 export abstract class BeeCursor {
   constructor(public chunkSize: number) {
 
   }
+  abstract get columns(): TableColumn[] | null
   abstract start(): Promise<void>
   abstract read(): Promise<any[][]>
   abstract cancel(): Promise<void>
@@ -26,8 +28,8 @@ export class NoOpCursor extends BeeCursor {
 }
 
 export interface StreamResults {
-  columns: TableColumn[],
-  totalRows: number,
+  columns?: TableColumn[],
+  totalRows?: number,
   cursor: BeeCursor
 }
 
@@ -42,6 +44,7 @@ export interface TableOrView extends DatabaseEntity {
   partitions?: TablePartition[];
   tabletype?: string | null
   parenttype?: string | null
+  engine?: string
 }
 
 export interface TableIndex {
@@ -82,6 +85,7 @@ export interface TableProperties {
   partitions?: TablePartition[]
   owner?: string,
   createdAt?: string
+  permissionWarnings?: string[]
 }
 
 export interface TableColumn {
@@ -97,7 +101,13 @@ export interface ExtendedTableColumn extends SchemaItem {
   tableName: string
   hasDefault?: boolean
   generated?: boolean
+  generationExpression?: string
+  characterSet?: string
+  collation?: string
   array?: boolean
+  /** For enum columns, the allowed values in definition order. Undefined for non-enum types. */
+  enumValues?: string[]
+  bksField: BksField
 }
 
 export interface PrimaryKeyColumn {
@@ -116,9 +126,13 @@ export interface DatabaseFilterOptions {
   database?: string;
   only?: string[];
   ignore?: string[];
+
+  // surrealdb only
+  namespace?: string;
 }
 
 export interface SchemaFilterOptions {
+  database?: string;
   schema?: string;
   only?: string[];
   ignore?: string[];
@@ -148,8 +162,15 @@ export interface IDbInsert {
 
 export interface TableResult {
   result: any[];
-  fields: string[];
+  fields: BksField[];
 }
+
+export interface BksField {
+  name: string;
+  bksType: BksFieldType;
+}
+
+export type BksFieldType = 'BINARY' | 'UNKNOWN' | 'OBJECTID' | 'SURREALID';
 
 export interface TableChanges {
   inserts: TableInsert[];
@@ -211,12 +232,15 @@ export const RoutineTypeNames = {
 
 export interface Routine extends DatabaseEntity {
   id: string;
+  oid?: string;
   returnType: string;
   returnTypeLength?: number;
   routineParams?: RoutineParam[];
   pinned?: boolean;
   type: RoutineType;
 }
+
+export type IncludedFilterTypes = 'standard' | 'ilike'
 
 // NOTE (day): note sure if this is really where we want to put edit partitions?
 export interface SupportedFeatures {
@@ -230,6 +254,38 @@ export interface SupportedFeatures {
   backDirFormat: boolean;
   restore: boolean;
   indexNullsNotDistinct: boolean; // for postgres 15 and above
+  transactions: boolean;
+  filterTypes: IncludedFilterTypes[];
+}
+
+export enum FieldReadOnlyReason {
+  NoLinkedTable,
+  MissingPK,
+  ImproperMapping,
+  IsGenerated
+}
+
+export const FieldReadOnlyReasonStr = {
+  [FieldReadOnlyReason.NoLinkedTable]: 'Could not find a table to link this column to within the query',
+  [FieldReadOnlyReason.MissingPK]: `Could not find all primary keys for this column's linked table`,
+  [FieldReadOnlyReason.ImproperMapping]: 'Could not map field to an existing table column',
+  [FieldReadOnlyReason.IsGenerated]: 'Cannot edit generated columns',
+}
+
+export interface FieldEditData {
+  editable: boolean;
+  id?: string; // this is what the field is referred to as in the object
+  columnName?: string;
+  linkedTable?: string;
+  linkedSchema?: string;
+  isPK?: boolean;
+  generated?: boolean;
+  nullable?: boolean;
+  array?: boolean;
+  readOnlyReason?: FieldReadOnlyReason;
+  dataType?: string;
+  enumValues?: string[];
+  bksField?: BksField;
 }
 
 export interface FieldDescriptor {
@@ -239,11 +295,15 @@ export interface FieldDescriptor {
 }
 
 export interface NgQueryResult {
-  fields: FieldDescriptor[];
-  rows: any[];
+  output?: any;
+  fields?: FieldDescriptor[];
+  rows?: any[];
+  truncated?: boolean;
   rowCount?: number;
+  totalRowCount?: number;
   affectedRows?: number;
   command?: any;
+  text?: string;
 }
 
 export type QueryResult = NgQueryResult[];
@@ -335,6 +395,8 @@ export interface CommandSettingSection {
 export interface ImportFuncOptions {
   clientExtras?: {[key: string]: any}
   executeOptions?: {[key: string]: any}
+  importerOptions?: {[key: string]: any}
+  storeValues?: {[key: string]: any}
 }
 
 export interface ImportScriptFunctions {
@@ -345,4 +407,35 @@ export interface ImportScriptFunctions {
   commitCommand: (args?: any) => Promise<null|any>
   rollbackCommand: (args?: any) => Promise<null|any>
   finalCommand?: (args?: any) => Promise<any|null>
+}
+
+export interface BuildInsertOptions {
+  columns?: any[],
+  bitConversionFunc?: (value: any) => any
+  runAsUpsert?: boolean
+  primaryKeys?: string[]
+  createUpsertFunc?: null | ((table: DatabaseEntity, data: {[key: string]: any}, primaryKey: string[]) => string)
+}
+
+export interface ServerStatistics {
+  queryCache: {
+    size: string;
+    limit: string;
+    hits: number;
+    inserts: number;
+    lowMemoryPrunes: number;
+  };
+  performance: {
+    connections: number;
+    uptime: number;
+    threadsRunning: number;
+    threadsConnected: number;
+    slowQueries: number;
+    questionsPerSecond: number;
+  };
+  memory: {
+    keyBufferSize: string;
+    innodbBufferPoolSize: string;
+    innodbBufferPoolUsed: string;
+  };
 }

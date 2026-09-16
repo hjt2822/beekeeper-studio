@@ -1,19 +1,19 @@
 import { ipcMain } from 'electron'
 import { autoUpdater } from 'electron-updater'
-import globals from '../common/globals'
 import { getActiveWindows } from './WindowBuilder'
-import rawlog from 'electron-log'
+import rawlog from '@bksLogger'
 
 const log = rawlog.scope('update-manager')
 
 import platformInfo from '../common/platform_info'
+import BksConfig from '@/common/bksConfig'
 
 autoUpdater.autoDownload = false
 autoUpdater.logger = log
 
 // HACK(mc, 2019-09-10): work around https://github.com/electron-userland/electron-builder/issues/4046
 function dealWithAppImage() {
-  if (platformInfo.isAppImage) {
+  if (platformInfo.isAppImageLauncher) {
     // remap temporary running AppImage to actual source
     // THIS IS PROBABLY SUPER BRITTLE AND MAKES ME WANT TO STOP USING APPIMAGE
     // eslint-disable-next-line
@@ -28,6 +28,11 @@ function dealWithAppImage() {
   }
 }
 
+function shouldSkipUpdater() {
+  if (platformInfo.isLinux && !platformInfo.isAppImage) return true
+  return false
+}
+
 function checkForUpdates() {
   log.info('checking for updates right now')
   try {
@@ -37,13 +42,31 @@ function checkForUpdates() {
   }
 }
 
-export function manageUpdates(debug?: boolean): void {
+export function setAllowBeta(allowBeta: boolean) {
+  autoUpdater.allowPrerelease = allowBeta;
+  autoUpdater.channel = allowBeta ? 'beta' : 'latest';
+}
+
+export function manageUpdates(allowBeta: boolean, debug?: boolean): void {
 
   if (platformInfo.environment === 'development' || platformInfo.isSnap || (platformInfo.isLinux && !platformInfo.isAppImage)) {
     log.info("not doing any updates, didn't meet conditional")
     return
   }
+
+  if (BksConfig.general.checkForUpdatesDisabled) {
+    log.info("automatic update checks are disabled")
+    return
+  }
+
+  setAllowBeta(allowBeta);
+
   dealWithAppImage();
+
+  if (shouldSkipUpdater()) {
+    log.info("Skipping auto-updater for this platform");
+    return;
+  }
 
   autoUpdater.logger?.debug?.(JSON.stringify(process.env))
 
@@ -73,5 +96,5 @@ export function manageUpdates(debug?: boolean): void {
 
   setInterval(() => {
     checkForUpdates()
-  }, globals.updateCheckInterval)
+  }, BksConfig.general.checkForUpdatesInterval)
 }

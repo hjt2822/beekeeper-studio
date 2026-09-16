@@ -1,9 +1,20 @@
 // Copyright (c) 2015 The SQLECTRON Team
 import _ from 'lodash'
-import logRaw from 'electron-log'
-import { TableChanges, TableDelete, TableFilter, TableInsert, TableUpdate } from '../models'
+import logRaw from '@bksLogger'
+import { TableChanges, TableDelete, TableFilter, TableInsert, TableUpdate, BuildInsertOptions, OrderBy } from '../models'
 import { joinFilters } from '@/common/utils'
 import { IdentifyResult } from 'sql-query-identifier/lib/defines'
+import { fromIni } from "@aws-sdk/credential-providers";
+import { Signer } from "@aws-sdk/rds-signer";
+import {
+  AWSCredentials
+} from "@/lib/db/authentication/amazon-redshift";
+import { IamAuthOptions, IamAuthType, IDbConnectionServerConfig } from "@/lib/db/types";
+import { AuthOptions } from "@/lib/db/authentication/azure";
+import { spawn } from "child_process";
+import { loadSharedConfigFiles } from "@smithy/shared-ini-file-loader";
+import { AwsCredentialIdentity, RuntimeConfigAwsCredentialIdentityProvider } from '@aws-sdk/types'
+import platformInfo from '@/common/platform_info'
 
 const log = logRaw.scope('db/util')
 
@@ -32,57 +43,83 @@ export function joinQueries(queries) {
   return results.join("")
 }
 
-
-export function buildSchemaFilter(filter, schemaField = 'schema_name') {
+export function buildSchemaFilter(filter, schemaField, wrapIdentifier: (s: string) => string = ansiWrapIdentifier) {
   if (!filter) return null
   const { schema, only, ignore } = filter
+  const field = wrapIdentifierPath(schemaField, wrapIdentifier);
 
   if (schema) {
-    return `${schemaField} = '${schema}'`;
+    return `${field} = '${escapeString(schema)}'`;
   }
 
   const where = [];
 
   if (only && only.length) {
-    where.push(`${schemaField} IN (${only.map((name) => `'${name}'`).join(',')})`);
+    where.push(`${field} IN (${only.map((name) => `'${escapeString(name)}'`).join(',')})`);
   }
 
   if (ignore && ignore.length) {
-    where.push(`${schemaField} NOT IN (${ignore.map((name) => `'${name}'`).join(',')})`);
+    where.push(`${field} NOT IN (${ignore.map((name) => `'${escapeString(name)}'`).join(',')})`);
   }
 
   return where.join(' AND ');
 }
 
-export function buildDatabaseFilter(filter, databaseField) {
+export function buildDatabaseFilter(filter, databaseField, wrapIdentifier: (s: string) => string = ansiWrapIdentifier) {
   if (!filter) {
     return null
   }
   const { only, ignore, database } = filter
+  const field = wrapIdentifierPath(databaseField, wrapIdentifier);
 
   if (database) {
-    return `${databaseField} = '${database}'`;
+    return `${field} = '${escapeString(database)}'`;
   }
 
   const where = [];
 
   if (only && only.length) {
-    where.push(`${databaseField} IN (${only.map((name) => `'${name}'`).join(',')})`);
+    where.push(`${field} IN (${only.map((name) => `'${escapeString(name)}'`).join(',')})`);
   }
 
   if (ignore && ignore.length) {
-    where.push(`${databaseField} NOT IN (${ignore.map((name) => `'${name}'`).join(',')})`);
+    where.push(`${field} NOT IN (${ignore.map((name) => `'${escapeString(name)}'`).join(',')})`);
   }
 
   return where.join(' AND ');
 }
 
-function wrapIdentifier(value) {
+// Wraps a dotted identifier path (e.g. "r.routine_schema") by applying
+// `wrap` to each segment. Single-segment paths pass through one wrap call.
+function wrapIdentifierPath(path: string, wrap: (s: string) => string): string {
+  return path.split('.').map(wrap).join('.');
+}
+
+// ANSI SQL identifier quoting. Safe default: every dialect that currently
+// calls the filter helpers (PG, SQL Server, Trino, DuckDB, SQL Anywhere)
+// accepts double-quoted identifiers.
+function ansiWrapIdentifier(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+function defaultWrapIdentifier(value) {
   return (value !== '*' ? `\`${value.replace(/`/g, '``')}\`` : '*');
 }
 
+export function getEntraOptions(server, extra): AuthOptions {
+  return {
+    password: server.config?.password,
+    userName: server.config?.user,
+    tenantId: server.config?.azureAuthOptions.tenantId,
+    clientId: server.config?.azureAuthOptions.clientId,
+    clientSecret: server.config?.azureAuthOptions.clientSecret,
+    msiEndpoint: server.config?.azureAuthOptions.msiEndpoint,
+    cliPath: server.config?.azureAuthOptions.cliPath,
+    ...extra
+  };
+}
 
-export function buildFilterString(filters: TableFilter[], columns = []) {
+export function buildFilterString(filters: TableFilter[], columns = [], wrapIdentifier: (s: string) => string) {
   let filterString = ""
   let filterParams = []
   if (filters && _.isArray(filters) && filters.length > 0) {
@@ -105,6 +142,8 @@ export function buildFilterString(filters: TableFilter[], columns = []) {
     })
     filterString = "WHERE " + joinFilters(allFilters, filters)
 
+    log.info('FILTER: ', filterString)
+
     filterParams = filters.filter((item) => !!item.value).flatMap((item) => {
       return _.isArray(item.value) ? item.value : [item.value]
     })
@@ -125,16 +164,27 @@ export function applyChangesSql(changes: TableChanges, knex: any): string {
     return queries.endsWith(';') ? queries : `${queries};`
 }
 
-export function buildSelectTopQuery(table, offset, limit, orderBy, filters, countTitle = 'total', columns = [], selects = ['*']) {
+export function buildSelectTopQuery(
+  table: string,
+  offset: number,
+  limit: number,
+  orderBy: OrderBy[],
+  filters: string | TableFilter[],
+  countTitle = 'total',
+  columns = [],
+  selects = ['*'],
+  schema?: string,
+  wrapIdentifier: (s: string) => string = defaultWrapIdentifier
+) {
   log.debug('building selectTop for', table, offset, limit, orderBy, selects)
   let orderByString = ""
 
   if (orderBy && orderBy.length > 0) {
     orderByString = "ORDER BY " + (orderBy.map((item: any) => {
       if (_.isObject(item)) {
-        return `\`${item['field']}\` ${item['dir'].toUpperCase()}`
+        return `${wrapIdentifier(item['field'])} ${item['dir'].toUpperCase()}`
       } else {
-        return `\`${item}\``
+        return wrapIdentifier(item)
       }
     })).join(",")
   }
@@ -143,14 +193,14 @@ export function buildSelectTopQuery(table, offset, limit, orderBy, filters, coun
   if (_.isString(filters)) {
     filterString = `WHERE ${filters}`
   } else {
-    const filterBlob = buildFilterString(filters, columns)
+    const filterBlob = buildFilterString(filters, columns, wrapIdentifier)
     filterString = filterBlob.filterString
     filterParams = filterBlob.filterParams
   }
 
   const selectSQL = `SELECT ${selects.map((s) => wrapIdentifier(s)).join(", ")}`
   const baseSQL = `
-    FROM \`${table}\`
+    FROM ${schema ? `${wrapIdentifier(schema)}.` : ''}${wrapIdentifier(table)}
     ${filterString}
   `
   const countSQL = `
@@ -162,7 +212,7 @@ export function buildSelectTopQuery(table, offset, limit, orderBy, filters, coun
     ${_.isNumber(limit) ? `LIMIT ${limit}` : ''}
     ${_.isNumber(offset) ? `OFFSET ${offset}` : ""}
     `
-    return {query: sql, countQuery: countSQL, params: filterParams}
+  return {query: sql, countQuery: countSQL, params: filterParams}
 }
 
 export async function executeSelectTop(queries, conn, executor) {
@@ -179,8 +229,9 @@ export async function genericSelectTop(conn, table, offset, limit, orderBy, filt
   return await executeSelectTop(queries, conn, executor)
 }
 
-export function buildInsertQuery(knex, insert: TableInsert, columns = [], bitConversionFunc: any = _.toNumber) {
+export function buildInsertQuery(knex, insert: TableInsert, { columns = [], bitConversionFunc = _.toNumber, runAsUpsert = false, primaryKeys = [] as string[], createUpsertFunc = null }: BuildInsertOptions = {}) {
   const data = _.cloneDeep(insert.data)
+  const canRunAsUpsert = _.intersection(Object.keys(data[0]), primaryKeys).length === primaryKeys.length && runAsUpsert
   data.forEach((item) => {
     const insertColumns = Object.keys(item)
     insertColumns.forEach((ic) => {
@@ -194,7 +245,6 @@ export function buildInsertQuery(knex, insert: TableInsert, columns = [], bitCon
       } else if (matching && matching.dataType && matching.dataType.startsWith('bit') && _.isBoolean(item[ic])) {
         item[ic] = item[ic] ? 1 : 0;
       }
-
       // HACK (@day): fixes #1734. Knex reads any '?' in identifiers as a parameter, so we need to escape any that appear.
       if (ic.includes('?')) {
         const newIc = ic.replaceAll('?', '\\?');
@@ -204,20 +254,33 @@ export function buildInsertQuery(knex, insert: TableInsert, columns = [], bitCon
     })
 
   })
+
   const table = insert.dataset ? `${insert.dataset}.${insert.table}` : insert.table;
   const builder = knex(table);
+
   if (insert.schema) {
     builder.withSchema(insert.schema)
   }
-  const query = builder
+
+  if (canRunAsUpsert && typeof(createUpsertFunc) === 'function'){
+    return createUpsertFunc({ schema: insert.schema, name: insert.table, entityType: 'table' }, data, primaryKeys)
+  } else if (canRunAsUpsert) {
+    // https://knexjs.org/guide/query-builder.html#onconflict
+    return builder
+      .insert(data)
+      .onConflict(primaryKeys)
+      .merge()
+      .toQuery()
+  }
+
+  return builder
     .insert(data)
     .toQuery()
-  return query
 }
 
-export function buildInsertQueries(knex, inserts) {
+export function buildInsertQueries(knex, inserts, { runAsUpsert = false, primaryKeys = [], createUpsertFunc = null } = {}) {
   if (!inserts) return []
-  return inserts.map(insert => buildInsertQuery(knex, insert))
+  return inserts.map(insert => buildInsertQuery(knex, insert, { runAsUpsert, primaryKeys, createUpsertFunc }))
 }
 
 export function buildUpdateQueries(knex, updates: TableUpdate[]) {
@@ -265,6 +328,21 @@ export function buildSelectQueriesFromUpdates(knex, updates: TableUpdate[]) {
   })
 }
 
+interface Releasable {
+  release: () => Promise<any>
+}
+
+export async function withReleasable<T>(item: Releasable, func: (x: Releasable) => Promise<T>) {
+  try {
+    return await func(item)
+  } finally {
+    if (item) {
+      await item.release()
+    }
+  }
+}
+
+
 export async function withClosable<T>(item, func): Promise<T> {
   try {
     return await func(item)
@@ -275,7 +353,6 @@ export async function withClosable<T>(item, func): Promise<T> {
   }
 
 }
-
 
 export function buildDeleteQueries(knex, deletes: TableDelete[]) {
   if (!deletes) return []
@@ -301,5 +378,155 @@ export function isAllowedReadOnlyQuery (identifiedQueries: IdentifyResult[], rea
 }
 
 export const errorMessages = {
-  readOnly: 'Write action(s) not allowed in Read-Only Mode.'
+  readOnly: 'Write action(s) not allowed in Read-Only Mode.',
+  maxReservedConnections: 'You have reserved the max connections available for manual transactions. Stop one of your active transactions to start a new one.'
 }
+
+export async function resolveAWSCredentials(iamOptions: IamAuthOptions): Promise<AWSCredentials> {
+  if (iamOptions.accessKeyId && iamOptions.secretAccessKey) {
+    return {
+      accessKeyId: iamOptions.accessKeyId,
+      secretAccessKey: iamOptions.secretAccessKey,
+    };
+  }
+
+  // Fallback to AWS profile-based credentials
+  const provider = fromIni({
+    profile: iamOptions.awsProfile || "default",
+  });
+  return provider();
+}
+
+export async function getIAMPassword(iamOptions: IamAuthOptions, hostname: string, port: number, username: string): Promise<string> {
+  const {
+    awsProfile,
+    accessKeyId,
+    secretAccessKey,
+    authType
+  } = iamOptions;
+
+  let { awsRegion: region } = iamOptions;
+
+  let credentials: AwsCredentialIdentity | RuntimeConfigAwsCredentialIdentityProvider;
+
+  if (authType === IamAuthType.Key) {
+    credentials = {
+      accessKeyId,
+      secretAccessKey,
+    }
+  } else {
+    const profileCreds = { profile: awsProfile || "default" };
+    credentials = fromIni(profileCreds);
+  }
+
+  if (!region) {
+    const { configFile } = await loadSharedConfigFiles();
+    region = configFile[awsProfile || "default"]?.region;
+    if (!region) {
+      throw new Error(`Region not found in profile "${awsProfile}" and no region explicitly provided.`);
+    }
+  }
+
+  const signer = new Signer({
+    credentials,
+    hostname,
+    region,
+    port,
+    username,
+  });
+
+  return  await signer.getAuthToken();
+}
+
+export async function refreshTokenIfNeeded(iamOptions: IamAuthOptions, server: any, port: number): Promise<string> {
+  if(!iamOptions?.iamAuthenticationEnabled){
+    return null
+  }
+
+  let resolvedPw: string = null;
+
+  if (iamOptions?.authType === IamAuthType.CLI) {
+    resolvedPw = await getAWSCLIToken(
+      server.config,
+      iamOptions
+    );
+  } else {
+    // TODO (@day): why are we passing in the port like this?!?
+    resolvedPw = await getIAMPassword(
+      iamOptions,
+      server.config.host,
+      server.config.port || port,
+      server.config.user
+    );
+  }
+
+  return resolvedPw;
+}
+
+export function sanitizeCommandPath(path: string): string {
+  if (!path) return path;
+
+  if (platformInfo.isWindows) {
+    const escaped = path.replace(/"/g, '""');
+    return `"${escaped}"`;
+  } else {
+    const escaped = path.replace(/'/g, "'\\''");
+    return `'${escaped}'`;
+  }
+}
+
+export async function getAWSCLIToken(server: IDbConnectionServerConfig, options: IamAuthOptions): Promise<string> {
+  if (!options?.cliPath) {
+    throw new Error('AZ command not specified');
+  }
+
+  const extraArgs = []
+
+  if(options.awsProfile){
+    extraArgs.push('--profile', options.awsProfile)
+  }
+
+  return new Promise<string>((resolve, reject) => {
+    const proc = spawn(options.cliPath, [
+      'rds',
+      'generate-db-auth-token',
+      '--hostname',
+      server.host,
+      '--port',
+      server.port.toString(),
+      '--region',
+      options.awsRegion,
+      '--username',
+      server.user,
+      ...extraArgs
+    ], { shell: false });
+
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    proc.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    proc.on('error', (err) => {
+      reject(err);
+    });
+
+    proc.on('close', (code) => {
+      if (code === 0) {
+        try {
+          resolve(stdout.trim());
+        } catch (err) {
+          reject(`Failed to parse token JSON: ${err}\nRaw output: ${stdout}`);
+        }
+      } else {
+        reject(`Process exited with code ${code}\nSTDERR: ${stderr}\nSTDOUT: ${stdout}`);
+      }
+    });
+  });
+}
+

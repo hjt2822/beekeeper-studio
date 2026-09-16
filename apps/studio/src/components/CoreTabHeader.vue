@@ -12,8 +12,8 @@
         class="nav-link"
         @mousedown="mousedown"
         @click.middle.prevent="maybeClose"
-        @contextmenu="$bks.openMenu({item: tab, options: contextOptions, event: $event})"
-        :class="{ active: selected }"
+        @contextmenu="$bks.openMenu({id: headerContextMenuId, item: tab, options: contextOptions, event: $event})"
+        :class="{ active: selected, 'active-transaction': isTransaction }"
       >
         <tab-icon :tab="tab" />
         <span
@@ -83,6 +83,8 @@
 </template>
 <script>
 import TabIcon from './tab/TabIcon.vue'
+import { mapState } from 'vuex'
+import _ from 'lodash'
 
   export default {
   components: { TabIcon },
@@ -120,6 +122,11 @@ import TabIcon from './tab/TabIcon.vue'
         event.preventDefault()
         this.$emit('close', this.tab)
       },
+      forceClose(event) {
+        event.stopPropagation()
+        event.preventDefault()
+        this.$emit('forceClose', this.tab)
+      },
       doNothing() {
         // Empty on purpose
       },
@@ -130,16 +137,32 @@ import TabIcon from './tab/TabIcon.vue'
       }
     },
     watch: {
+      activeTab() {
+        if(!this.activeTab){
+           return;
+         }
+         const { schemaName, tabType, tableName } = this.activeTab;
+         const newSelectedSidebarItem = `${tabType}.${schemaName}.${tableName}`;
+         this.$store.commit('selectSidebarItem', newSelectedSidebarItem);
+      },
     },
     computed: {
+      ...mapState('tabs', { 'activeTab': 'active' }),
+      headerContextMenuId() {
+        // "tab.query.header", "tab.table.header", "tab.tableProperties.header", etc..
+        return `tab.${_.camelCase(this.tab.tabType)}-header`
+      },
       contextOptions() {
+        const copyNameClass = (this.tab.tabType === "table" || this.tab.tabType === "table-properties") ? "" : "disabled";
+
         return [
           { name: "Close", slug: 'close', handler: ({event}) => this.maybeClose(event)},
           { name: "Close Others", slug: 'close-others', handler: ({item}) => this.$emit('closeOther', item)},
           { name: 'Close All', slug: 'close-all', handler: ({item}) => this.$emit('closeAll', item)},
           { name: "Close Tabs to Right", slug: 'close-to-right', handler: ({item}) => this.$emit('closeToRight', item)},
-          { name: "Duplicate", slug: 'duplicate', handler: ({item}) => this.$emit('duplicate', item) }
-        ]
+          { name: "Duplicate", slug: 'duplicate', handler: ({item}) => this.$emit('duplicate', item) },
+          { name: "Copy Entity Name", slug: 'copy-name', handler: ({item}) => this.$emit('copyName', item), class: copyNameClass },
+        ];
       },
       modalName() {
         return `sure-${this.tab.id}`
@@ -150,12 +173,12 @@ import TabIcon from './tab/TabIcon.vue'
         return null
       },
       keymap() {
-        const result = {}
-        if (this.selected) {
-          result[this.ctrlOrCmd('w')] = this.maybeClose
-        }
+        if (!this.selected) return {}
 
-        return result
+        return this.$vHotkeyKeymap({
+          'tab.closeTab': this.maybeClose,
+          'tab.forceCloseTab': this.forceClose,
+        })
       },
       cleanText() {
         // no spaces
@@ -195,6 +218,9 @@ import TabIcon from './tab/TabIcon.vue'
       title() {
         return this.queryTabTitle || this.tableTabTitle || "Unknown"
       },
+      isTransaction() {
+        return this.tab.isTransaction === true;
+      }
     }
   }
 

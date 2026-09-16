@@ -24,6 +24,14 @@
           >
             {{ pill.name }} {{ pill.dirty ? '*' : '' }}
           </a>
+          <a
+            v-if="erDiagramAvailable"
+            class="nav-pill er-diagram-pill"
+            title="Open ER Diagram in a new tab"
+            @click.prevent="openErDiagram"
+          >
+            ER Diagram <i class="material-icons">open_in_new</i>
+          </a>
         </div>
       </div>
       <div
@@ -50,7 +58,7 @@
           @actionCompleted="refresh"
           @refresh="refresh"
         >
-          <template v-slot:footer>
+          <template #footer>
             <div class="statusbar-info col flex expand">
               <x-button
                 @click.prevent="openData"
@@ -86,11 +94,19 @@
                 >
                   <i class="material-icons-outlined">report_problem</i> Read Only
                 </span>
+                <span
+                  class="statusbar-item permission-warning"
+                  v-if="properties && properties.permissionWarnings && properties.permissionWarnings.length > 0"
+                  :title="permissionWarningsTooltip"
+                  @click="showPermissionWarnings"
+                >
+                  <i class="material-icons-outlined">warning</i> Limited Info
+                </span>
               </template>
             </div>
           </template>
 
-          <template v-slot:actions>
+          <template #actions>
             <x-button
               class="actions-btn btn btn-flat"
               title="Actions"
@@ -104,6 +120,16 @@
                 <x-menuitem @click.prevent="openTable">
                   <x-label>View Data</x-label>
                 </x-menuitem>
+                <template v-for="item in extraPopupMenu">
+                  <hr v-if="item.type === 'divider'" :key="item.slug">
+                  <x-menuitem
+                    v-else
+                    :key="item.slug"
+                    @click.prevent="handleExtraStatusbarMenuClick($event, item)"
+                  >
+                    <x-label>{{ item.name }}</x-label>
+                  </x-menuitem>
+                </template>
                 <hr v-if="dev">
                 <x-menuitem
                   v-if="dev"
@@ -134,11 +160,12 @@ import TableIndexesVue from './tableinfo/TableIndexes.vue'
 import TableRelationsVue from './tableinfo/TableRelations.vue'
 import TableTriggersVue from './tableinfo/TableTriggers.vue'
 import TablePartitionsVue from './tableinfo/TablePartitions.vue'
+import TableSchemaValidationVue from './tableinfo/TableSchemaValidation.vue'
 import TableLength from '@/components/common/TableLength.vue'
 import { format as humanBytes } from 'bytes'
 import { AppEvent } from '@/common/AppEvent'
-import { mapState } from 'vuex'
-import rawLog from 'electron-log/renderer'
+import { mapState, mapGetters } from 'vuex'
+import rawLog from '@bksLogger'
 
 const log = rawLog.scope('TabTableProperties')
 export default {
@@ -166,6 +193,7 @@ export default {
           id: 'indexes',
           name: "Indexes",
           tableOnly: true,
+          needsIndexes: true,
           needsProperties: true,
           needsPartitions: false,
           component: TableIndexesVue,
@@ -175,6 +203,7 @@ export default {
           id: 'relations',
           name: "Relations",
           tableOnly: true,
+          needsRelations: true,
           needsProperties: true,
           needsPartitions: false,
           component: TableRelationsVue,
@@ -184,6 +213,7 @@ export default {
           id: 'triggers',
           name: "Triggers",
           tableOnly: true,
+          needsTriggers: true,
           needsProperties: true,
           needsPartitions: false,
           component: TableTriggersVue,
@@ -196,6 +226,15 @@ export default {
           needsProperties: true,
           needsPartitions: true,
           component: TablePartitionsVue,
+          dirty: false
+        },
+        {
+          id: 'schema-validation',
+          name: 'Schema Validation',
+          tableOnly: true,
+          mongoOnly: true,
+          needsProperties: false,
+          component: TableSchemaValidationVue,
           dirty: false
         }
       ],
@@ -217,6 +256,8 @@ export default {
   },
   computed: {
     ...mapState(['tables', 'tablesInitialLoaded', 'supportedFeatures', 'connection']),
+    ...mapGetters(['dialectData', 'dialect', 'erDiagramAvailable']),
+    ...mapGetters('popupMenu', ['getExtraPopupMenu']),
     shouldInitialize() {
       // TODO (matthew): Move this to the wrapper TabWithTable
       return this.tablesInitialLoaded && this.active && !this.initialized
@@ -246,12 +287,28 @@ export default {
           return false
         }
 
+        if (p.needsRelations && this.dialectData?.disabledFeatures?.relations) {
+          return false
+        }
+
+        if (p.needsIndexes && this.dialectData?.disabledFeatures?.indexes) {
+          return false
+        }
+
+        if (p.needsTriggers && this.dialectData?.disabledFeatures?.triggers) {
+          return false
+        }
+
         if (p.needsPartitions && (!this.supportedFeatures.partitions ||
           ((!this.supportedFeatures.editPartitions && !this.properties.partitions?.length) ||
           (this.supportedFeatures.editPartitions && this.table.tabletype != partitionTableType)))) {
           return false
         }
-        if(p.tableOnly) {
+        if (p.mongoOnly && this.dialect !== 'mongodb') {
+          return false
+        }
+
+        if (p.tableOnly) {
           return isTable
         }
         return true
@@ -262,6 +319,13 @@ export default {
     },
     humanIndexSize() {
       return humanBytes(this.properties.indexSize)
+    },
+    permissionWarningsTooltip() {
+      if (!this.properties?.permissionWarnings?.length) return ''
+      return `Some information couldn't be displayed:\n${this.properties.permissionWarnings.join('\n')}`
+    },
+    extraPopupMenu() {
+      return this.getExtraPopupMenu('structure.statusbar');
     },
   },
   methods: {
@@ -313,12 +377,63 @@ export default {
         this.loading = false
       }
     },
+    showPermissionWarnings() {
+      if (!this.properties?.permissionWarnings?.length) return
+
+      const warnings = this.properties.permissionWarnings
+      const message = `Some table information couldn't be displayed due to insufficient permissions:\n\n• ${warnings.join('\n• ')}`
+
+      this.$noty.warning(message, {
+        timeout: 8000,
+        modal: false,
+        layout: 'center',
+        theme: 'mint'
+      })
+    },
     async openTable() {
       this.$root.$emit("loadTable", { table: this.table })
-    }
+    },
+    /** @param {import('@/plugins/BeekeeperPlugin').ContextOption} item */
+    handleExtraStatusbarMenuClick(event, item) {
+      item.handler({ event, item: this.table });
+    },
+    openErDiagram() {
+      this.$bksPlugin.execute("bks-er-diagram", "showOneTable", {
+        entity: {
+          type: this.table.entityType,
+          name: this.table.name,
+          schema: this.table.schema,
+        },
+      });
+    },
   },
   async mounted() {
     if (this.shouldInitialize) this.initialize()
   }
 }
 </script>
+
+<style scoped>
+.er-diagram-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.er-diagram-pill .material-icons {
+  font-size: 14px;
+}
+
+.permission-warning {
+  cursor: pointer;
+  color: #f39c12;
+}
+
+.permission-warning:hover {
+  color: #e67e22;
+}
+
+.permission-warning i {
+  color: inherit !important;
+}
+</style>

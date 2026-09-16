@@ -1,12 +1,17 @@
 <template>
-  <statusbar :class="{ 'empty': results.length === 0, 'query-meta': true }">
-    <template v-if="results.length > 0">
+  <statusbar
+    :active="active"
+    :class="{ 'empty': !results || results.length === 0, 'query-meta': true }"
+  >
+    <slot name="left-actions" />
+    <template v-if="results?.length > 0">
       <div
+        id="query-editor-statusbar"
         class="truncate statusbar-info"
         v-hotkey="keymap"
       >
         <span
-          v-show="results.length > 1"
+          v-show="results?.length > 1"
           class="statusbar-item result-selector"
           :title="'Results'"
         >
@@ -17,8 +22,12 @@
             <select
               name="resultSelector"
               id="resultSelector"
-              @change="selectedResult = parseInt($event.target.value);"
+              @change="selectedResult = parseInt($event.target.value)"
               class="form-control"
+              @mouseover="showSwitch = editing && changesCount > 0"
+              @mouseleave="showSwitch = false"
+              :disabled="editing && changesCount > 0"
+              v-tooltip="{ content: 'Discard or apply your changes to switch result sets', trigger: 'manual', show: showSwitch }"
             >
               <option
                 v-for="(resultOption, index) in results"
@@ -26,7 +35,7 @@
                 :key="index"
                 :value="index"
               >
-                Result {{ index + 1 }}: {{ shortNum(resultOption.rows.length, 0) }} {{ pluralize('row', resultOption.rows.length, false) }}
+                Result {{ index + 1 }}: {{ shortNum(resultOption.rows.length, 0) }} {{ $pluralize('row', resultOption.rows.length, false) }}
               </option>
             </select>
           </div>
@@ -62,99 +71,168 @@
       </div>
     </template>
     <template v-else>
-      <span class="expand" />
       <span class="empty">No Data</span>
-    </template>
-    <div class="flex flex-right statusbar-right-actions">
-      <x-button
-        class="btn btn-flat btn-icon end"
-        :disabled="results.length === 0"
-        menu
+      <span
+        class="statusbar-item execute-time"
+        v-if="this.elapsedTime > 1"
       >
-        Download <i class="material-icons">arrow_drop_down</i>
-        <x-menu>
-          <x-menuitem @click.prevent="download('csv')">
-            <x-label>Download as CSV</x-label>
-          </x-menuitem>
-          <x-menuitem @click.prevent="download('xlsx')">
-            <x-label>Download as Excel</x-label>
-          </x-menuitem>
-          <x-menuitem @click.prevent="download('json')">
-            <x-label>Download as JSON</x-label>
-          </x-menuitem>
-          <x-menuitem @click.prevent="download('md')">
-            <x-label>Download as Markdown</x-label>
-          </x-menuitem>
-          <span
-            v-tooltip="{
-              content: downloadFullTooltip
-            }"
-          >
-            <x-menuitem
-              @click.prevent="$event => submitCurrentQueryToFile()"
-              :disabled="!(result && result.truncated)"
-            >
-              <x-label>Download Full Resultset</x-label>
-              <i
-                v-if="$config.isCommunity"
-                class="material-icons menu-icon"
-              >stars</i>
-            </x-menuitem>
-          </span>
-          <hr>
-          <x-menuitem
-            title="Probably don't do this with large results (500+)"
-            @click.prevent="copyToClipboard"
-          >
-            <x-label>Copy to Clipboard (TSV / Excel)</x-label>
-          </x-menuitem>
-          <x-menuitem
-            title="Probably don't do this with large results (500+)"
-            @click.prevent="copyToClipboardJson"
-          >
-            <x-label>Copy to Clipboard (JSON)</x-label>
-          </x-menuitem>
-          <x-menuitem
-            title="Probably don't do this with large results (500+)"
-            @click.prevent="copyToClipboardMarkdown"
-          >
-            <x-label>Copy to Clipboard (Markdown)</x-label>
-          </x-menuitem>
-        </x-menu>
+        <i class="material-icons">access_time</i>
+        <span>{{ elapsedTimeText }}</span>
+      </span>
+    </template>
+    <span class="expand" />
+    <x-button
+      v-if="canEdit && editing && changesCount > 0"
+      class="btn btn-flat"
+      @click.prevent="discardChanges"
+    >
+      Reset
+    </x-button>
+    <x-buttons v-if="canEdit && editing && changesCount > 0" class="pending-changes">
+      <x-button
+        class="btn btn-primary btn-badge btn-icon"
+        @click.prevent="saveChanges"
+        v-tooltip="`Apply ${changesString}`"
+      >
+        <span
+          class="badge"
+        >
+          <small>{{ changesCount }}</small>
+        </span>
+        <span>Apply</span>
       </x-button>
       <x-button
-        class="actions-btn btn btn-flat settings-btn"
+        class="btn btn-primary"
         menu
       >
-        <i class="material-icons">settings</i>
         <i class="material-icons">arrow_drop_down</i>
         <x-menu>
-          <x-menuitem disabled>
-            <x-label>Editor keymap</x-label>
+          <x-menuitem @click.prevent="saveChanges">
+            <x-label>Apply</x-label>
+            <!-- TODO (@day): Keyboard shortcut?? -->
           </x-menuitem>
-          <x-menuitem
-            :key="t.value"
-            v-for="t in keymapTypes"
-            @click.prevent="userKeymap = t.value"
-          >
-            <x-label class="flex-between">
-              {{ t.name }}
-              <span
-                class="material-icons"
-                v-if="t.value === userKeymap"
-              >done</span>
-            </x-label>
+          <x-menuitem @click.prevent="copyToSql">
+            <x-label>Copy to SQL</x-label>
           </x-menuitem>
         </x-menu>
       </x-button>
-    </div>
+    </x-buttons>
+    <span
+      v-tooltip="editButtonTooltip"
+    >
+      <x-button
+        v-if="canEdit && !editing"
+        :disabled="results?.length === 0 || !resultEditable || usedConfig.readOnlyMode"
+        class="btn btn-flat btn-icon"
+        id="edit-data-btn"
+        @click.prevent="editResults"
+      >
+        <i class="material-icons">edit</i>
+        Edit Data
+      </x-button>
+    </span>
+    <x-button
+      v-if="canEdit && editing && changesCount <= 0"
+      class="btn btn-flat"
+      @click.prevent="stopEditing"
+    >
+      Stop Editing
+    </x-button>
+    <x-button
+      class="btn btn-flat btn-icon end"
+      :disabled="results?.length === 0"
+      menu
+    >
+      Download <i class="material-icons">arrow_drop_down</i>
+      <x-menu>
+        <x-menuitem @click.prevent="download('csv')">
+          <x-label>Download as CSV</x-label>
+        </x-menuitem>
+        <x-menuitem @click.prevent="download('xlsx')">
+          <x-label>Download as Excel</x-label>
+        </x-menuitem>
+        <x-menuitem @click.prevent="download('json')">
+          <x-label>Download as JSON</x-label>
+        </x-menuitem>
+        <x-menuitem @click.prevent="download('md')">
+          <x-label>Download as Markdown</x-label>
+        </x-menuitem>
+        <span
+          v-if="dialect !== 'mongodb'"
+          v-tooltip="{
+            content: downloadFullTooltip
+          }"
+        >
+          <x-menuitem
+            @click.prevent="$event => submitCurrentQueryToFile()"
+            :disabled="!(result && result.truncated)"
+          >
+            <x-label>Download Full Resultset</x-label>
+            <i
+              v-if="$store.getters.isCommunity"
+              class="material-icons menu-icon"
+            >stars</i>
+          </x-menuitem>
+        </span>
+        <hr>
+        <x-menuitem
+          title="Probably don't do this with large results (500+)"
+          @click.prevent="copyToClipboard"
+        >
+          <x-label>Copy to Clipboard (TSV / Excel)</x-label>
+        </x-menuitem>
+        <x-menuitem
+          title="Probably don't do this with large results (500+)"
+          @click.prevent="copyToClipboardJson"
+        >
+          <x-label>Copy to Clipboard (JSON)</x-label>
+        </x-menuitem>
+        <x-menuitem
+          title="Probably don't do this with large results (500+)"
+          @click.prevent="copyToClipboardMarkdown"
+        >
+          <x-label>Copy to Clipboard (Markdown)</x-label>
+        </x-menuitem>
+      </x-menu>
+    </x-button>
+    <x-button
+      class="actions-btn btn btn-flat settings-btn"
+      menu
+    >
+      <i class="material-icons">settings</i>
+      <i class="material-icons">arrow_drop_down</i>
+      <x-menu>
+        <x-menuitem disabled togglable>
+          <x-label>Editor keymap</x-label>
+        </x-menuitem>
+        <x-menuitem
+          :key="t.value"
+          v-for="t in keymapTypes"
+          togglable
+          :toggled="t.value === userKeymap"
+          @click.prevent="userKeymap = t.value"
+        >
+          <x-label>{{ t.name }}</x-label>
+        </x-menuitem>
+        <x-menuitem
+          togglable
+          :toggled="wrapText"
+          @click.prevent="$emit('wrap-text')"
+        >
+          <x-label class="flex-between">
+            Wrap Text
+          </x-label>
+        </x-menuitem>
+      </x-menu>
+    </x-button>
   </statusbar>
 </template>
 <script>
-import humanizeDuration from 'humanize-duration'
-import Statusbar from '../common/StatusBar.vue'
-import { mapState } from 'vuex';
-import pluralize from 'pluralize';
+import humanizeDuration from 'humanize-duration';
+import Statusbar from '../common/StatusBar.vue';
+import { mapState, mapGetters } from 'vuex';
+import { AppEvent } from '@/common/AppEvent';
+import formatSeconds from "@/lib/time/formatSeconds";
 
 const shortEnglishHumanizer = humanizeDuration.humanizer({
   language: "shortEn",
@@ -173,11 +251,12 @@ const shortEnglishHumanizer = humanizeDuration.humanizer({
 });
 
 export default {
-  props: ['results', 'running', 'value', 'executeTime'],
+  props: ['results', 'running', 'value', 'executeTime', 'wrapText', 'active', 'elapsedTime', 'editing', 'changesCount', 'changesString', 'resultEditable'],
   components: { Statusbar },
   data() {
     return {
       showHint: false,
+      showSwitch: false,
       selectedResult: 0
     }
   },
@@ -197,14 +276,16 @@ export default {
       }
     },
     selectedResult(newValue, oldValue) {
-        this.$emit('input', this.selectedResult);
-        if (this.hasUsedDropdown === false) {
-          this.hasUsedDropdown = true
-        }
+      this.$emit('input', this.selectedResult);
+      if (this.hasUsedDropdown === false) {
+        this.hasUsedDropdown = true
+      }
     }
   },
   computed: {
+    ...mapGetters(['dialect', 'dialectData']),
     ...mapState('settings', ['settings']),
+    ...mapState(['usedConfig']),
     userKeymap: {
       get() {
         const value = this.settings?.keymap.value;
@@ -212,7 +293,7 @@ export default {
       },
       set(value) {
         if (value === this.userKeymap || !this.keymapTypes.map(k => k.value).includes(value)) return;
-        this.$store.dispatch('settings/save', { key: 'keymap', value: value });
+        this.trigger(AppEvent.switchUserKeymap, value)
       }
     },
     keymapTypes() {
@@ -220,7 +301,7 @@ export default {
     },
     hasUsedDropdown: {
       get() {
-        return this.settings?.hideResultsDropdown.value ?? false
+        return this.settings?.hideResultsDropdown?.value ?? false
       },
       set(value) {
         this.$store.dispatch('settings/save', { key: 'hideResultsDropdown', value })
@@ -244,7 +325,7 @@ export default {
         return null
       }
       const executeTime = this.executeTime || 0
-      
+
       return (executeTime < 5000) ? `${executeTime}ms` : shortEnglishHumanizer(executeTime)
     },
     executionTimeTitle() {
@@ -253,6 +334,9 @@ export default {
       }
       return `Execution time: ${humanizeDuration(this.executeTime)}`
     },
+    elapsedTimeText() {
+      return formatSeconds(this.elapsedTime);
+    },
     downloadFullTooltip() {
       if (this.result?.truncated) {
         return `Re - run the query and send the full result to a file${ this.result?.truncated ? ' (' + this.result.totalRowCount + ' rows)' : '' }`
@@ -260,21 +344,30 @@ export default {
       return `Only needed for result sets that have been truncated (Beekeeper will tell you if this happens)`
     },
     keymap() {
-      const result = {}
-      result['shift+up'] = () => this.changeSelectedResult(-1);
-      result['shift+down'] = () => this.changeSelectedResult(1);
-      return result
+      return this.$vHotkeyKeymap({
+        'queryEditor.selectNextResult': this.changeSelectedResult.bind(this, 1),
+        'queryEditor.selectPreviousResult': this.changeSelectedResult.bind(this, -1),
+      })
+    },
+    canEdit() {
+      return !this.dialectData?.disabledFeatures?.resultEditing;
+    },
+    editButtonTooltip() {
+      if (this.usedConfig?.readOnlyMode) {
+        return "Read Only Mode is enabled for this connection. Editing is disabled.";
+      } else if (this.resultEditable) {
+        return "Edit table data directly from query results";
+      } else {
+        return "There is not enough information in the result set to generate an update query.";
+      }
     }
   },
   methods: {
     changeSelectedResult(direction) {
       const newIndex =  this.selectedResult + direction;
-      if (newIndex >= 0 && newIndex < this.results.length) {
+      if (newIndex >= 0 && newIndex < this.results?.length) {
         this.selectedResult = newIndex;
       }
-    },
-    pluralize(word, amount, flag) {
-      return window.main.pluralize(word, amount, flag)
     },
     // Attribution: https://stackoverflow.com/questions/10599933/convert-long-number-into-abbreviated-string-in-javascript-with-a-special-shortn/10601315
     shortNum(num, fixed) {
@@ -289,6 +382,21 @@ export default {
         d = c < 0 ? c : Math.abs(c), // enforce -0 is 0
         e = d + ['', 'K', 'M', 'B', 'T'][k]; // append power
       return e;
+    },
+    stopEditing() {
+      this.$emit('stopEditing');
+    },
+    editResults() {
+      this.$emit('editResults');
+    },
+    saveChanges() {
+      this.$emit('saveChanges');
+    },
+    copyToSql() {
+      this.$emit('copyToSql');
+    },
+    discardChanges() {
+      this.$emit('discardChanges');
     },
     download(format) {
       this.$emit('download', format)

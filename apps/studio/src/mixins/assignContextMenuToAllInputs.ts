@@ -1,0 +1,153 @@
+import Vue, { ComponentOptions } from "vue";
+import { divider } from "@beekeeperstudio/ui-kit";
+
+export const assignContextMenuToAllInputs: ComponentOptions<Vue> = {
+  data() {
+    return {
+      ctxMenu_lastEditable: null as
+        | HTMLInputElement
+        | HTMLTextAreaElement
+        | null,
+    };
+  },
+
+  async mounted() {
+    await this.$nextTick();
+    this.$el.addEventListener("contextmenu", this.ctxMenu_showContextMenu);
+  },
+
+  beforeDestroy() {
+    this.$el.removeEventListener("contextmenu", this.ctxMenu_showContextMenu);
+  },
+
+  methods: {
+    ctxMenu_showContextMenu(event: MouseEvent) {
+      if (event.defaultPrevented) {
+        return;
+      }
+
+      if (!this.ctxMenu_isTextInput(event.target)) {
+        return;
+      }
+
+      if (event.target.dataset?.disableContextMenu) {
+        return;
+      }
+
+      event.preventDefault();
+
+      // Remember what was right-clicked so handlers act on the correct field
+      if (this.ctxMenu_isEditable(event.target)) {
+        this.ctxMenu_lastEditable = event.target;
+        this.ctxMenu_lastEditable.focus(); // ensure undo/redo applies here
+      } else {
+        this.ctxMenu_lastEditable = null;
+      }
+
+      const selectionDepClass = this.ctxMenu_hasSelectedText(event.target)
+        ? ""
+        : "disabled";
+
+      this.$bks.openMenu({
+        event,
+        options: [
+          {
+            name: "Undo",
+            handler: () => {
+              const el = this.ctxMenu_getLastEditable();
+              if (!el) return;
+              // Uses Chromium's native undo stack for inputs/textareas
+              document.execCommand("undo");
+            },
+            shortcut: "Control+Z",
+            write: true,
+          },
+          {
+            name: "Redo",
+            handler: () => {
+              const el = this.ctxMenu_getLastEditable();
+              if (!el) return;
+              document.execCommand("redo");
+            },
+            shortcut: "Control+Shift+Z",
+            write: true,
+          },
+          divider,
+          {
+            name: "Cut",
+            handler: () => document.execCommand("cut"),
+            class: selectionDepClass,
+            shortcut: "Control+X",
+            write: true,
+          },
+          {
+            name: "Copy",
+            handler: () => document.execCommand("copy"),
+            class: selectionDepClass,
+            shortcut: "Control+C",
+          },
+          {
+            name: "Paste",
+            handler: () => document.execCommand("paste"),
+            shortcut: "Control+V",
+            write: true,
+          },
+          divider,
+          {
+            name: "Select All",
+            handler: () => document.execCommand("selectAll"),
+            shortcut: "Control+A",
+          },
+        ],
+      });
+    },
+
+    ctxMenu_isTextInput(
+      target: EventTarget | null
+    ): target is HTMLInputElement | HTMLTextAreaElement {
+      if (target instanceof HTMLTextAreaElement) return true;
+      if (target instanceof HTMLInputElement) {
+        // Only text-like inputs support text selection / clipboard ops
+        const textTypes = [
+          "text",
+          "password",
+          "email",
+          "url",
+          "tel",
+          "search",
+          "number",
+        ];
+        return textTypes.includes(target.type);
+      }
+      return false;
+    },
+
+    ctxMenu_isEditable(el: HTMLElement) {
+      if (!el) return false;
+      if (!this.ctxMenu_isTextInput(el)) {
+        return el.isContentEditable;
+      }
+      return !el.readOnly && !el.disabled;
+    },
+
+    ctxMenu_hasSelectedText(target: HTMLInputElement | HTMLTextAreaElement) {
+      return (
+        typeof target.selectionStart === "number" &&
+        typeof target.selectionEnd === "number" &&
+        target.selectionStart !== target.selectionEnd
+      );
+    },
+
+    ctxMenu_getLastEditable() {
+      // Prefer the last right-clicked field; fall back to the currently focused one
+      const active =
+        this.ctxMenu_lastEditable ||
+        (document.activeElement as HTMLElement | null);
+      if (active && this.ctxMenu_isEditable(active)) {
+        (active as HTMLElement).focus();
+        return active as HTMLInputElement | HTMLTextAreaElement;
+      }
+      return null;
+    },
+  },
+};

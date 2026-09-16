@@ -1,5 +1,6 @@
 <template>
   <div class="host-port-user-password">
+    <slot name="header" />
     <div class="row">
       <div
         class="form-group col"
@@ -10,6 +11,7 @@
           name=""
           v-model="config.socketPathEnabled"
           id=""
+          :disabled="disabled"
         >
           <option :value="false">
             Host and Port
@@ -19,10 +21,12 @@
           </option>
         </select>
       </div>
-      <div
-        class="form-group col"
-        v-show="config.socketPathEnabled"
-      >
+    </div>
+    <div
+      class="row gutter"
+      v-show="config.socketPathEnabled"
+    >
+      <div class="col form-group" :class="{ s9: supportsSocketPathWithCustomPort }">
         <label for="socketPath">Socket Path</label>
         <input
           id="socketPath"
@@ -30,7 +34,17 @@
           v-model="config.socketPath"
           type="text"
           name="socketPath"
+          :disabled="disabled"
         >
+      </div>
+      <div class="col s3 form-group" v-if="supportsSocketPathWithCustomPort">
+        <label for="port">Port</label>
+        <masked-input
+          :value="config.port"
+          :type="'number'"
+          @input="val => config.port = val"
+          :disabled="disabled"
+        />
       </div>
     </div>
     <div
@@ -39,151 +53,51 @@
     >
       <div class="col s9 form-group">
         <label for="Host">Host</label>
-        <input
-          type="text"
-          class="form-control"
-          @paste="onPaste"
-          name="host"
-          v-model="config.host"
-        >
+        <masked-input
+          :value="config.host"
+          @input="val => config.host = val"
+          :disabled="disabled"
+        />
       </div>
       <div class="col s3 form-group">
         <label for="port">Port</label>
-        <input
-          type="number"
-          class="form-control"
-          name="port"
-          v-model.number="config.port"
-        >
-      </div>
-    </div>
-
-    <toggle-form-area
-      title="Enable SSL"
-      v-if="supportComplexSSL"
-    >
-      <template v-slot:header>
-        <x-switch
-          @click.prevent="toggleSsl"
-          :toggled="config.ssl"
+        <masked-input
+          :value="config.port"
+          :type="'number'"
+          @input="val => config.port = val"
+          :disabled="disabled"
         />
-      </template>
-
-      <template v-slot:default>
-        <div class="row gutter">
-          <div class="alert alert-info">
-            <i class="material-icons-outlined">info</i>
-            <div>
-              Providing certificate files is optional. By default Beekeeper will just trust the server certificate.
-              <external-link href="https://docs.beekeeperstudio.io/pages/first-page#ssl">
-                Read More
-              </external-link>
-            </div>
-          </div>
-        </div>
-        <div class="row gutter">
-          <div class="col form-group">
-            <label>CA Cert (optional)</label>
-            <file-picker
-              v-model="config.sslCaFile"
-              :disabled="!config.ssl"
-            />
-          </div>
-        </div>
-
-        <div class="row gutter">
-          <div class="col form-group">
-            <label>Certificate (optional)</label>
-            <file-picker
-              v-model="config.sslCertFile"
-              :disabled="!config.ssl"
-            />
-          </div>
-        </div>
-
-        <div class="row gutter">
-          <div class="col form-group">
-            <label>Key File (optional)</label>
-            <file-picker
-              v-model="config.sslKeyFile"
-              :disabled="!config.ssl"
-            />
-          </div>
-        </div>
-        <div class="row gutter">
-          <div class="col form-group">
-            <label
-              class="checkbox-group"
-              for="reject"
-            >
-              <input
-                class="form-control"
-                id="reject"
-                type="checkbox"
-                name="rememberPassword"
-                v-model="config.sslRejectUnauthorized"
-              >
-              <span>Reject Unauthorized</span>
-              <i
-                class="material-icons"
-                v-tooltip="'This only takes effect if you provide certificate files'"
-              >help_outlined</i>
-            </label>
-          </div>
-        </div>
-      </template>
-    </toggle-form-area>
-
-
-    <!-- Simple SSL -->
-    <div
-      v-else
-      class="advanced-connection-settings"
-    >
-      <div class="flex flex-middle">
-        <h4
-          class="advanced-heading flex"
-          :class="{enabled: config.ssl}"
-        >
-          <span class="expand">Enable SSL</span>
-          <x-switch
-            @click.prevent="toggleSsl"
-            :toggled="config.ssl"
-          />
-        </h4>
       </div>
-      <small class="text-muted help">{{ sslHelp }}</small>
     </div>
 
-    <div class="row gutter">
-      <div class="col s6 form-group">
+    <common-ssl
+      v-if="!hideSsl"
+      :config="config"
+      :ssl-help="sslHelp"
+      :support-complex-s-s-l="supportComplexSSL"
+      :disabled="disabled"
+    />
+
+    <div v-if="!hideCredentials" class="row gutter">
+      <div class="col form-group" :class="[showPasswordForm ? 's6' : 's12']">
         <label for="user">User</label>
-        <input
-          type="text"
-          name="user"
-          v-model="config.username"
-          class="form-control"
-        >
+        <masked-input
+          :value="config.username"
+          @input="val => config.username = val"
+          :disabled="disabled"
+        />
       </div>
-      <div class="col s6 form-group">
-        <label for="password">Password</label>
-        <input
-          :type="togglePasswordInputType"
-          v-model="config.password"
-          class="password form-control"
-        >
-        <i
-          @click.prevent="togglePassword"
-          class="material-icons password-icon"
-        >{{ togglePasswordIcon }}</i>
+      <div class="col s6 form-group" v-show="showPasswordForm">
+        <label for="password">{{ passwordLabel }}</label>
+        <password-input v-model="config.password" :disabled="disabled" />
       </div>
     </div>
     <slot />
     <div class="form-group expand">
       <label
-        v-if="config.connectionType !== 'cassandra'"
+        v-if="!['cassandra', 'scylladb'].includes(config.connectionType)"
         for="defaultDatabase"
-      >Default Database</label>
+      >Default {{ topLevelEntityName }}</label>
       <label
         v-else
         for="defaultDatabase"
@@ -192,87 +106,83 @@
         type="text"
         class="form-control"
         v-model="config.defaultDatabase"
+        :disabled="disabled"
       >
     </div>
   </div>
 </template>
 
 <script>
-import FilePicker from '@/components/common/form/FilePicker.vue'
-import ExternalLink from '@/components/common/ExternalLink.vue'
 import { findClient } from '@/lib/db/clients'
-import ToggleFormArea from '../common/ToggleFormArea.vue'
+import MaskedInput from '@/components/MaskedInput.vue'
+import PasswordInput from '@/components/common/form/PasswordInput.vue'
+import CommonSsl from './CommonSsl.vue'
 
-  export default {
-    props: {
-      config: Object,
-      sslHelp: String,
-      supportComplexSSL: {
-        type: Boolean,
-        default: true
-      }
+export default {
+  props: {
+    config: Object,
+    sslHelp: String,
+    supportComplexSSL: {
+      type: Boolean,
+      default: true
     },
-    components: {
-      FilePicker,
-      ExternalLink,
-      ToggleFormArea
+    showPasswordForm: {
+      type: Boolean,
+      default: true
     },
-    data() {
-      return {
-        sslToggled: false,
-        showPassword: false,
-      }
+    // Used by SqlServerForm to hide user/password when integrated auth is selected.
+    hideCredentials: {
+      type: Boolean,
+      default: false
     },
-    computed: {
-      hasAdvancedSsl() {
-        return this.config.sslCaFile || this.config.sslCertFile || this.config.sslKeyFile
-      },
-      toggleIcon() {
-        return this.sslToggled ? 'keyboard_arrow_down' : 'keyboard_arrow_right'
-      },
-      togglePasswordIcon() {
-        return this.showPassword ? "visibility_off" : "visibility"
-      },
-      togglePasswordInputType() {
-        return this.showPassword ? "text" : "password"
-      },
-      supportsSocketPath() {
-        return findClient(this.config.connectionType).supportsSocketPath
-      },
+    // Used by SqlServerForm to hide the SSL section when integrated auth provides its own
+    // Encrypt toggle (the ODBC driver only supports Encrypt + TrustServerCertificate).
+    hideSsl: {
+      type: Boolean,
+      default: false
     },
-    methods: {
-      onPaste(event) {
-          const data = event.clipboardData.getData('text')
-          if (this.config.parse(data)) {
-            event.preventDefault()
-          }
-      },
-      toggleSsl() {
-        this.config.ssl = !this.config.ssl
-
-        // Remove CA file when disabling ssl
-        if (!this.config.ssl) {
-          this.config.sslCaFile = null
-          this.config.sslCertFile = null
-          this.config.sslKeyFile = null
-        }
-      },
-      toggleSslAdvanced() {
-        this.sslToggled = !this.sslToggled;
-      },
-      togglePassword() {
-        this.showPassword = !this.showPassword
-      }
+    passwordLabel: {
+      type: String,
+      default: 'Password'
     },
-    mounted() {
-      this.sslToggled = this.hasAdvancedSsl
+    disabled: {
+      type: Boolean,
+      default: false
     }
+  },
+  components: {
+    MaskedInput,
+    PasswordInput,
+    CommonSsl
+  },
+  computed: {
+    supportsSocketPath() {
+      return findClient(this.config.connectionType).supportsSocketPath
+    },
+    supportsSocketPathWithCustomPort() {
+      return findClient(this.config.connectionType).supportsSocketPathWithCustomPort
+    },
+    topLevelEntityName() {
+      return findClient(this.config.connectionType).topLevelEntity || 'Database'
+    }
+  },
+  methods: {
+    async onPaste(event) {
+      const data = event.clipboardData.getData('text')
+      try {
+        await this.$util.send('appdb/saved/parseUrl', { url: data });
+        event.preventDefault();
+      } catch {
+        return;
+      }
+    },
   }
+}
 </script>
 
 <style lang="scss" scoped>
-  .optional-text {
-    font-style: italic;
-    padding-left: .2rem;
-  }
+.optional-text {
+  font-style: italic;
+  padding-left: .2rem;
+}
 </style>

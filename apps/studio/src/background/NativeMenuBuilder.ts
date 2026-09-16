@@ -1,10 +1,12 @@
 import MenuBuilder from '../common/menus/MenuBuilder'
 import NativeMenuActionHandlers from './NativeMenuActionHandlers'
-import { ipcMain, BrowserWindow } from 'electron'
+import { ipcMain, BrowserWindow, MenuItemConstructorOptions } from 'electron'
 import {AppEvent} from '../common/AppEvent'
 import { IGroupedUserSettings } from '../common/appdb/models/user_setting'
-import rawLog from 'electron-log'
+import rawLog from '@bksLogger'
 import platformInfo from '@/common/platform_info'
+import { NativePluginMenuItem } from '@/services/plugin/types'
+import _ from 'lodash'
 
 const log = rawLog.scope('NativeMenuBuilder')
 
@@ -12,27 +14,73 @@ export default class NativeMenuBuilder {
   private builder?: MenuBuilder
   private handler: NativeMenuActionHandlers
   private menu?: Electron.Menu
+  /** Array of native menu items from plugins */
+  private pluginMenuItems: MenuItemConstructorOptions[] = []
+  private connected = false
 
-  constructor(private electron: any, settings: IGroupedUserSettings){
+  constructor(private electron: any, settings: IGroupedUserSettings, bksConfig: IBksConfig){
     this.handler = new NativeMenuActionHandlers(settings)
-    if (
-      (!settings.menuStyle ||
-      settings.menuStyle.value === 'native') &&
-      !platformInfo.isWayland
-    ) {
-      this.builder = new MenuBuilder(settings, this.handler, platformInfo)
+    // We only support native titlebars for Mac now
+    if (platformInfo.isMac) {
+      this.builder = new MenuBuilder(settings, this.handler, platformInfo, bksConfig)
     }
   }
 
   initialize(): void {
     if (this.builder) {
-      const template = this.builder.buildTemplate()
-      this.menu = this.electron.Menu.buildFromTemplate(template)
-      this.electron.Menu.setApplicationMenu(this.menu)
+      this.rebuildMenu()
     } else {
       this.electron.Menu.setApplicationMenu(null)
     }
     this.listenForClicks()
+    this.listenForToggleConnectionMenuItems();
+    this.listenForPluginMenuChanges();
+  }
+
+  toggleConnectionMenuItems(action:"enable"|"disable") {
+    if(!this.menu){
+      return;
+    }
+
+    const isEnabled = action === "enable" ? true : false;
+
+    const pluginItemIds = this.pluginMenuItems.map((item) => item.id);
+
+    const toggleMenuMap = {
+      File: ["new-query-menu", "go-to", "disconnect", "import-sql-files", "close-tab"],
+      View: ["menu-toggle-sidebar", "menu-secondary-sidebar"],
+      Tools: ["backup-database", "restore-database", "export-tables", ...pluginItemIds],
+    };
+
+    for(const [menuLabel, toggleMenuIds] of Object.entries(toggleMenuMap)){
+      const menuItems = this.getMenuItems(menuLabel);
+      menuItems.forEach(menuItem=>{
+        if(toggleMenuIds.includes(menuItem.id)){
+          menuItem.enabled = isEnabled;
+        }
+      })
+    }
+  }
+
+  toggleAppMenuItems(action: "enable" | "disable") {
+    if (!this.menu) {
+      return;
+    }
+
+    const isEnabled = action === "enable" ? true : false;
+
+    const toggleMenuMap = {
+      File: ["import-connection-files"]
+    };
+
+    for (const [menuLabel, toggleMenuIds] of Object.entries(toggleMenuMap)) {
+      const menuItems = this.getMenuItems(menuLabel);
+      menuItems.forEach(menuItem => {
+        if (toggleMenuIds.includes(menuItem.id)) {
+          menuItem.enabled = isEnabled;
+        }
+      })
+    }
   }
 
   listenForClicks(): void {
@@ -42,11 +90,79 @@ export default class NativeMenuBuilder {
         log.debug("Received Menu Click, event", actionName, arg, window)
         if (window) {
           const func = this.handler[actionName].bind(this.handler)
-          func(arg || null, window)
+          func(arg ?? null, window)
         }
       } catch (e) {
         console.error(`Couldn't trigger action ${actionName}(${arg || ""}), ${e.message}`)
       }
     })
+  }
+
+  listenForToggleConnectionMenuItems(): void {
+    ipcMain.on("enable-connection-menu-items", (_event ) => {
+      this.connected = true;
+      this.toggleConnectionMenuItems("enable");
+      this.toggleAppMenuItems("disable");
+    });
+    ipcMain.on("disable-connection-menu-items", (_event ) => {
+      this.connected = false;
+      this.toggleConnectionMenuItems("disable");
+      this.toggleAppMenuItems("enable");
+    });
+  }
+
+  listenForPluginMenuChanges(): void {
+    ipcMain.on("add-native-menu-item", (_event, item: NativePluginMenuItem) => {
+      if (this.pluginMenuItems.some((existing) => existing.id === item.id)) {
+        log.debug(`Menu item with id ${item.id} already exists.`);
+        return;
+      }
+      this.pluginMenuItems.push({
+        ...item,
+        click: (_menuItem, win) => {
+          if (win && win instanceof BrowserWindow) {
+            win.webContents.send(AppEvent.pluginMenuClicked, item);
+          }
+        },
+      });
+      this.rebuildMenu();
+    });
+
+    ipcMain.on("remove-native-menu-item", (_event, id: string) => {
+      const removed = _.remove(this.pluginMenuItems, item => item.id === id);
+      if (removed.length) {
+        this.rebuildMenu();
+      }
+    });
+  }
+
+  private getMenuItems(label: string) {
+    return this.menu?.items.find(item => item.label === label)?.submenu?.items ?? []
+  }
+
+  private rebuildMenu(): void {
+    if (!this.builder) {
+      return;
+    }
+    const template = this.builder.buildTemplate();
+    this.injectPluginMenuItems(template);
+    this.menu = this.electron.Menu.buildFromTemplate(template);
+    this.electron.Menu.setApplicationMenu(this.menu);
+    this.toggleConnectionMenuItems(this.connected ? "enable" : "disable");
+    this.toggleAppMenuItems(this.connected ? "disable" : "enable");
+  }
+
+  private injectPluginMenuItems(template: Electron.MenuItemConstructorOptions[]): void {
+    // Plugin menu items always go under Tools menu
+    const toolsMenu = template.find(m => m.label === 'Tools' || m.id === 'tools');
+    if (!toolsMenu || !Array.isArray(toolsMenu.submenu)) {
+      return;
+    }
+    const [pinned, rest] = _.partition(
+      this.pluginMenuItems,
+      item => item.id.startsWith('bks-er-diagram')
+    );
+    toolsMenu.submenu.unshift(...pinned);
+    toolsMenu.submenu.push(...rest);
   }
 }

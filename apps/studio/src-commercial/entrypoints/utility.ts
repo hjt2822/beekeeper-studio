@@ -1,5 +1,9 @@
+import rawLog from '@bksLogger';
+rawLog.info("initializing utility");
+
+const log = rawLog.scope('UtilityProcess');
+
 import { MessagePortMain } from 'electron';
-import rawLog from 'electron-log'
 import ORMConnection from '@/common/appdb/Connection'
 import platformInfo from '@/common/platform_info';
 import { AppDbHandlers } from '@/handlers/appDbHandlers';
@@ -9,34 +13,116 @@ import { GeneratorHandlers } from '@/handlers/generatorHandlers';
 import { Handlers } from '../backend/handlers/handlers';
 import { newState, removeState, state } from '@/handlers/handlerState';
 import { QueryHandlers } from '@/handlers/queryHandlers';
+import { TabHistoryHandlers } from '@/handlers/tabHistoryHandlers'
 import { ExportHandlers } from '@commercial/backend/handlers/exportHandlers';
 import { BackupHandlers } from '@commercial/backend/handlers/backupHandlers';
+import { CliHandlers } from '@commercial/backend/handlers/cliHandlers';
+import { AwsHandlers } from '@commercial/backend/handlers/awsHandlers';
+import { ImportHandlers } from '@commercial/backend/handlers/importHandlers';
 import { EnumHandlers } from '@commercial/backend/handlers/enumHandlers';
 import { TempHandlers } from '@/handlers/tempHandlers';
+import { DevHandlers } from '@/handlers/devHandlers';
+import { FormatterPresetHandlers } from '@/handlers/formatterPresetHandlers';
+import { LicenseHandlers } from '@/handlers/licenseHandlers';
+import { LockHandlers } from '@/handlers/lockHandlers';
+import { PluginHandlers } from '@commercial/backend/handlers/pluginHandlers';
+import { PluginManager } from '@/services/plugin';
+import PluginFileManager from '@/services/plugin/PluginFileManager';
+import { DriverDepHandlers } from '@/handlers/driverDepHandlers';
+import { DriverDepManager, DriverDepFileManager, createDefaultRegistry } from '@/services/driverDeps';
+import type { DepPlatform, DepArch } from '@/services/driverDeps';
+import BksConfig from '@/common/bksConfig';
+import _ from 'lodash';
+import {
+  ConfigurationModule,
+  BundledPluginModule,
+} from '@commercial/backend/plugin-system/modules';
+import { PluginErrorCode, PluginSystemErrorCode } from '@/lib/errors';
 
-const log = rawLog.scope('UtilityProcess');
+import * as sms from 'source-map-support'
+import { WorkspaceHandlers } from '@/handlers/workspaceHandlers';
+
+if (platformInfo.env.development || platformInfo.env.test) {
+  sms.install()
+}
 
 let ormConnection: ORMConnection;
+const pluginManager = new PluginManager({
+  appVersion: platformInfo.appVersion,
+  fileManager: new PluginFileManager({
+    pluginsDirectory: platformInfo.pluginsDirectory,
+  }),
+});
+pluginManager.registerModule(ConfigurationModule.with({ config: BksConfig }));
+pluginManager.registerModule(BundledPluginModule);
+
+const driverDepManager = new DriverDepManager({
+  fileManager: new DriverDepFileManager({
+    driverDepsDirectory: platformInfo.driverDepsDirectory,
+    userAgent: BksConfig.general.downloadUserAgent,
+  }),
+  registry: createDefaultRegistry(),
+  platform: platformInfo.platform as DepPlatform,
+  arch: (process.arch === 'x64' ? 'x64' : 'arm64') as DepArch,
+});
 
 interface Reply {
   id: string,
   type: 'reply' | 'error',
   data?: any,
   error?: string
+  errorName?: "PluginSystemError" | "PluginError" | "Error"
+  errorCode?: PluginSystemErrorCode | PluginErrorCode
+  errorDetail?: string
+  errorHint?: string
   stack?: string
 }
 
-export let handlers: Handlers = {
+export const handlers: Handlers = {
   ...ConnHandlers,
   ...QueryHandlers,
   ...GeneratorHandlers,
   ...ExportHandlers,
+  ...ImportHandlers,
   ...AppDbHandlers,
   ...BackupHandlers,
+  ...CliHandlers,
+  ...AwsHandlers,
   ...FileHandlers,
   ...EnumHandlers,
-  ...TempHandlers
+  ...TempHandlers,
+  ...LicenseHandlers,
+  ...PluginHandlers(pluginManager),
+  ...DriverDepHandlers(driverDepManager),
+  ...TabHistoryHandlers,
+  ...LockHandlers,
+  ...FormatterPresetHandlers,
+  ...WorkspaceHandlers,
+  ...(platformInfo.isDevelopment && DevHandlers),
 };
+
+_.mixin({
+  'deepMapKeys': function (obj, fn) {
+
+    const x = {};
+
+    _.forOwn(obj, function (rawV, k) {
+      let v = rawV
+      if (_.isPlainObject(v)) {
+        v = _.deepMapKeys(v, fn);
+      } else if (_.isArray(v)) {
+        v = v.map((item) => _.deepMapKeys(item, fn))
+      }
+      x[fn(v, k)] = v;
+    });
+
+    return x;
+  }
+});
+
+process.on('uncaughtException', (error) => {
+  log.error(error);
+});
 
 process.parentPort.on('message', async ({ data, ports }) => {
   const { type, sId } = data;
@@ -52,7 +138,7 @@ process.parentPort.on('message', async ({ data, ports }) => {
     case 'close':
       log.info('REMOVING STATE FOR: ', sId);
       state(sId).port.close();
-      removeState(sId);
+      await removeState(sId);
       break;
     default:
       log.error('UNRECOGNIZED MESSAGE TYPE RECEIVED FROM MAIN PROCESS');
@@ -61,25 +147,48 @@ process.parentPort.on('message', async ({ data, ports }) => {
 
 async function runHandler(id: string, name: string, args: any) {
   log.info('RECEIVED REQUEST FOR NAME, ID: ', name, id);
-  let replyArgs: Reply = {
+  const replyArgs: Reply = {
     id,
     type: 'reply',
   };
 
   if (handlers[name]) {
-    try {
-      replyArgs.data = await handlers[name](args)
-    } catch (e) {
-      replyArgs.type = 'error';
-      replyArgs.stack = e?.stack
-      replyArgs.error = e?.message ?? e
-    }
+    return handlers[name](args)
+      .then((data) => {
+        replyArgs.data = data;
+      })
+      .catch((e) => {
+        replyArgs.type = 'error';
+        replyArgs.stack = e?.stack;
+        replyArgs.error = e?.message ?? e;
+        replyArgs.errorName = e?.name;
+        replyArgs.errorCode = e?.code;
+        replyArgs.errorDetail = e?.detail
+        replyArgs.errorHint = e?.hint
+        log.error("HANDLER: ERROR", e)
+      })
+      .finally(() => {
+        try {
+          state(args.sId).port.postMessage(replyArgs);
+        } catch (e) {
+          log.error('ERROR SENDING MESSAGE: ', replyArgs, '\n\n\n ERROR: ', e?.message ?? e)
+          replyArgs.type = 'error';
+          replyArgs.stack = e?.stack;
+          replyArgs.error = e?.message ?? 'Error sending message from utility process, this may be a bug. Please file an issue if this persists.'
+          delete replyArgs.data
+          state(args.sId).port.postMessage(replyArgs)
+        }
+      });
   } else {
     replyArgs.type = 'error';
     replyArgs.error = `Invalid handler name: ${name}`;
-  }
 
-  state(args.sId).port.postMessage(replyArgs);
+    try {
+      state(args.sId).port.postMessage(replyArgs);
+    } catch (e) {
+      log.error('ERROR SENDING MESSAGE: ', replyArgs, '\n\n\n ERROR: ', e)
+    }
+  }
 }
 
 async function initState(sId: string, port: MessagePortMain) {
@@ -98,6 +207,14 @@ async function initState(sId: string, port: MessagePortMain) {
 async function init() {
   ormConnection = new ORMConnection(platformInfo.appDbPath, false);
   await ormConnection.connect();
+
+  pluginManager.initialize().catch((e) => {
+    log.error("Error initializing plugin manager", e);
+  });
+
+  driverDepManager.initialize().catch((e) => {
+    log.error("Error initializing driver dep manager", e);
+  });
 
   process.parentPort.postMessage({ type: 'ready' });
 }

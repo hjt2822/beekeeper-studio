@@ -9,17 +9,33 @@
             </div>
             <div class="actions">
               <x-button
+                title="New query or folder"
+              >
+                <i class="material-icons">add</i>
+                <x-menu style="--align: end;">
+                  <x-menuitem @click.prevent="createQuery">
+                    <x-label>New query</x-label>
+                  </x-menuitem>
+                  <x-menuitem @click.prevent="createFolder">
+                    <x-label>New folder</x-label>
+                  </x-menuitem>
+                </x-menu>
+              </x-button>
+              <x-button
                 title="Import queries"
               >
                 <i class="material-icons">save_alt</i>
                 <x-menu style="--align: end;">
                   <x-menuitem @click.prevent="importFromComputer">
-                    <x-label>Import .sql files</x-label>
+                    <x-label>Import .sql files into Saved Queries</x-label>
                   </x-menuitem>
-                  <x-menuitem @click.prevent="importFromLocal">
+                  <x-menuitem
+                    v-if="isCloud"
+                    @click.prevent="importFromLocal"
+                  >
                     <x-label>Import from local workspace</x-label>
                     <i
-                      v-if="$config.isCommunity"
+                      v-if="$store.getters.isCommunity"
                       class="material-icons menu-icon"
                     >stars</i>
                   </x-menuitem>
@@ -41,7 +57,7 @@
         <div class="fixed query-filter">
           <div class="filter">
             <div class="filter-wrap">
-              <input 
+              <input
                 class="filter-input"
                 type="text"
                 placeholder="Filter"
@@ -59,180 +75,379 @@
           </div>
         </div>
         <error-alert
-          v-if="error"
+          v-if="error && !isPollError && !errorList.includes(error)"
           :error="error"
           title="Problem loading queries"
         />
-        <sidebar-loading v-if="loading" />
+        <sidebar-loading v-if="initializing" />
         <nav
-          v-else-if="filteredQueries.length > 0"
+          v-else
           class="list-body"
           ref="wrapper"
+          @contextmenu.prevent="showRootContextMenu"
         >
-          <sidebar-folder
-            v-for="({ folder, queries }) in foldersWithQueries"
-            :key="`${folder.id}-${queries.length}`"
-            :title="`${folder.name} (${queries.length})`"
-
-            :expanded-initially="true"
-          >
+          <template v-if="searching">
+            <div
+              class="empty-state"
+              v-if="!typing && !fetchingResults && filteredQueries.length === 0"
+            >
+              No queries match "{{ filterQuery }}"
+            </div>
             <favorite-list-item
-              v-for="item in queries"
-              :key="item.id"
-              :item="item"
-              :active="isActive(item)"
-              :selected="selected === item"
+              v-for="query in filteredQueries"
+              :key="query.id"
+              :item="query"
+              :active="isActive(query)"
+              :selected="selected === query"
               @remove="remove"
               @select="select"
               @open="open"
-              @rename="rename"
+              @open-history="openHistory"
               @export="exportTo"
+              @duplicate="duplicate"
             />
-          </sidebar-folder>
-          <favorite-list-item
-            v-for="item in lonelyQueries"
-            :key="item.id"
-            :item="item"
-            :active="isActive(item)"
-            :selected="selected === item"
-            @remove="remove"
-            @select="select"
-            @open="open"
-            @rename="rename"
-            @export="exportTo"
-          />
-        </nav>
-        <div
-          class="empty"
-          v-else
-        >
-          <span class="empty-title">No Saved Queries</span>
-          <span
-            class="empty-actions"
-            v-if="isCloud"
+            <content-placeholder
+              v-if="fetchingResults || typing"
+              :animated="true"
+              :rounded="false"
+              class="list-item"
+            >
+              <content-placeholder-text
+                :lines="2"
+                class="list-item-btn"
+              />
+            </content-placeholder>
+          </template>
+          <tree
+            v-show="!searching"
+            :folders="extendedFolderNodes"
+            :items="extendedItemNodes"
+            :expanded-ids="expandedNodeIds"
+            @update:expandedIds="setExpandedIds"
+            @bks-tree-node-move="handleTreeNodeMove"
           >
-            <a
-              class="btn btn-flat btn-block btn-icon"
-              @click.prevent="importFromLocal"
-              title="Import queries from local workspace"
-            ><i class="material-icons">save_alt</i> Import</a>
-          </span>
-        </div>
+            <template #empty>
+              <div class="empty">
+                <span class="empty-title">No Saved Queries</span>
+                <span
+                  class="empty-actions"
+                  v-if="isCloud"
+                >
+                  <a
+                    class="btn btn-flat btn-block btn-icon"
+                    @click.prevent="importFromLocal"
+                    title="Import queries from local workspace"
+                  ><i class="material-icons">save_alt</i> Import</a>
+                </span>
+              </div>
+            </template>
+            <template #folder="{ props }">
+              <tree-folder
+                v-bind="props"
+                v-if="props.node.ref === draftFolder"
+                tag="div"
+              >
+                <template #name>
+                  <editable-text
+                    rename
+                    :initial-value="props.node.name"
+                    @submit="commitDraft"
+                    @cancel="stopDrafting"
+                  />
+                </template>
+              </tree-folder>
+              <tree-folder
+                v-bind="props"
+                v-else
+                :class="{
+                  'commited': commitedType === 'folder'
+                    && commitedId === props.node.ref.id,
+                }"
+                :tag="renamingFolderId === props.node.ref.id ? 'div': undefined"
+                @contextmenu.native="showFolderContextMenu($event, props.node.ref)"
+              >
+                <template
+                  #name
+                  v-if="renamingFolderId === props.node.ref.id"
+                >
+                  <editable-text
+                    rename
+                    :initial-value="props.node.ref.name"
+                    @submit="submitFolderRename(props.node.ref, $event)"
+                    @cancel="renamingFolderId = null"
+                  />
+                </template>
+              </tree-folder>
+            </template>
+            <template #folder-header="{ node, depth }">
+              <error-alert
+                v-if="errors[node.ref.id]"
+                :error="errors[node.ref.id]"
+                title="Problem loading folder"
+                class="tree-error"
+                :style="{ '--depth': depth }"
+                @close="setFolderError(node.ref.id, null)"
+              />
+            </template>
+            <template #folder-footer="{ node, depth }">
+              <content-placeholder
+                v-if="loadingFolderIds.includes(node.ref.id)"
+                :animated="true"
+                :rounded="false"
+                class="tree-loading"
+                :style="{ '--depth': depth }"
+              >
+                <content-placeholder-text :lines="1" />
+              </content-placeholder>
+            </template>
+            <template #folder-empty="{ node, depth }">
+              <div
+                v-if="!loadingFolderIds.includes(node.ref.id) && !errors[node.ref.id]"
+                class="tree-empty"
+                :style="{ '--depth': depth }"
+              >
+                No items
+              </div>
+            </template>
+            <template #item="{ node }">
+              <favorite-list-item
+                v-if="node.ref === draftItem"
+                :item="draftItem"
+                draft
+                @submit-draft="commitDraft"
+                @cancel-draft="stopDrafting"
+              />
+              <favorite-list-item
+                v-else
+                :item="node.ref"
+                :active="isActive(node.ref)"
+                :selected="selected === node.ref"
+                :class="{
+                  'drag-pending': (pendingSaveIds || []).includes(node.ref.id),
+                  'commited': commitedType === 'item'
+                    && commitedId === node.ref.id,
+                }"
+                @remove="remove"
+                @select="select"
+                @open="open"
+                @open-history="openHistory"
+                @export="exportTo"
+                @duplicate="duplicate"
+              />
+            </template>
+          </tree>
+        </nav>
       </div>
     </div>
-    <portal to="modals">
-      <modal
-        class="vue-dialog beekeeper-modal"
-        name="rename-modal"
-        @closed="renameMe=null"
-        height="auto"
-        :scrollable="true"
-      >
-        <div
-          class="dialog-content"
-          v-kbd-trap="true"
-          v-if="renameMe"
-        >
-          <div class="dialog-c-title">
-            Rename {{ renameMe.title }}
-          </div>
-          <query-rename-form
-            :query="renameMe"
-            @done="$modal.hide('rename-modal')"
-          />
-        </div>
-      </modal>
-    </portal>
   </div>
 </template>
 
 <script>
+import _ from 'lodash'
 import ErrorAlert from '@/components/common/ErrorAlert.vue'
-import { mapGetters, mapState } from 'vuex'
+import { mapActions, mapGetters, mapMutations, mapState } from 'vuex'
 import SidebarLoading from '../../common/SidebarLoading.vue'
 import FavoriteListItem from './favorite_list/FavoriteListItem.vue'
-import SidebarFolder from '@/components/common/SidebarFolder.vue'
 import { AppEvent } from '@/common/AppEvent'
-import QueryRenameForm from '@/components/common/form/QueryRenameForm.vue'
+import { Tree, TreeFolder } from "@beekeeperstudio/ui-kit/vue/tree";
+import EditableText from '@/components/common/EditableText.vue'
+import ContentPlaceholder from '@/components/common/loading/ContentPlaceholder.vue'
+import ContentPlaceholderText from '@/components/common/loading/ContentPlaceholderText.vue'
+import { buildItemNode, buildFolderNodes, parseReorderTarget } from '@/common/utils/folderTree'
+import rawLog from '@bksLogger'
+
+const log = rawLog.scope('FavoriteList')
 
 export default {
-  components: { SidebarLoading, ErrorAlert, FavoriteListItem, SidebarFolder, QueryRenameForm },
+  components: { SidebarLoading, ErrorAlert, FavoriteListItem, Tree, TreeFolder, EditableText, ContentPlaceholder, ContentPlaceholderText },
   data: function () {
     return {
       checkedFavorites: [],
       selected: null,
-      renameMe: null
+      renamingFolderId: null,
+      commitedId: null,
+      commitedType: null,
+      commitedTimeout: null,
+      loadingFolderIds: [],
+      errors: {},
+      drafting: false,
+      /** @type { 'folder' | 'item' | null } */
+      draftType: null,
+      draftParentId: null,
+      filterQuery: "",
     }
+  },
+  watch: {
+    filterQuery(value) {
+      this.setQueryFilter(value);
+    },
   },
   mounted() {
     document.addEventListener('mousedown', this.maybeUnselect)
   },
   beforeDestroy() {
     document.removeEventListener('mousedown', this.maybeUnselect)
+    clearTimeout(this.commitedTimeout)
   },
   computed: {
     ...mapGetters(['workspace', 'isCloud']),
     ...mapGetters('data/queries', {'filteredQueries': 'filteredQueries'}),
     ...mapState('tabs', {'activeTab': 'active'}),
-    ...mapState('data/queries', {'savedQueries': 'items', 'queriesLoading': 'loading', 'queriesError': 'error', 'savedQueryFilter': 'filter'}),
-    ...mapState('data/queryFolders', {'folders': 'items', 'foldersLoading': 'loading', 'foldersError': 'error'}),
-    filterQuery: {
-      get() {
-        return this.savedQueryFilter;
-      },
-      set(newFilter) {
-        this.$store.dispatch('data/queries/setSavedQueryFilter', newFilter);
-      }
+    ...mapState('data/queries/nodes', {'itemNodes': 'items'}),
+    ...mapState('data/queryFolders/nodes', {'folderNodes': 'items'}),
+    ...mapState('data/queries', {
+      'queries': 'items',
+      'queriesError': 'error',
+      'queriesPollError': 'pollError',
+      'queryFilter': 'filter',
+      'pendingSaveIds': 'pendingSaveIds',
+      fetchingResults: 'searching',
+    }),
+    ...mapState('data/queryFolders', {
+      'folders': 'items',
+      'foldersLoading': 'loading',
+      'foldersError': 'error',
+      'foldersPollError': 'pollError',
+    }),
+    ...mapState('sidebar/queries', {
+      expandedFolderIds: 'expandedIds',
+    }),
+    draftFolder() {
+      return { id: null, parentId: this.draftParentId, name: 'Untitled folder' };
     },
-    loading() {
-      return this.queriesLoading || this.foldersLoading || null
+    draftItem() {
+      return {
+        id: null,
+        queryFolderId: this.draftParentId,
+        title: 'Untitled query',
+        text: '',
+        excerpt: '',
+      };
+    },
+    extendedFolderNodes() {
+      if (this.drafting && this.draftType === 'folder') {
+        return buildFolderNodes([this.draftFolder, ...this.folders]);
+      }
+      return this.folderNodes;
+    },
+    extendedItemNodes() {
+      if (this.drafting && this.draftType === "item") {
+        return [
+          buildItemNode(this.draftItem, "queryFolderId", "title"),
+          ...this.sortedItemNodes,
+        ];
+      }
+      return this.sortedItemNodes;
+    },
+    sortedItemNodes() {
+      // Drag and drop is the only way to reorder queries, and it lands in
+      // `position`. Sorting by title here would outrank it, so a drag would
+      // save but never show.
+      return _.sortBy(this.itemNodes, (n) => n.ref.position ?? 0)
+    },
+    expandedNodeIds() {
+      return this.expandedFolderIds.map((id) => `folder-${id}`);
+    },
+    searching() {
+      return !!this.filterQuery;
+    },
+    initializing() {
+      return this.folders.length === 0 && this.foldersLoading;
+    },
+    typing() {
+      return this.filterQuery !== this.queryFilter;
     },
     error() {
       return this.queriesError || this.foldersError || null
     },
-    foldersWithQueries() {
-      return this.folders.map((folder) => {
-        return {
-          folder,
-          queries: this.filteredQueries.filter((q) =>
-            q.queryFolderId === folder.id
-          )
-        }
-      })
-    },
-    lonelyQueries() {
-      return this.filteredQueries.filter((query) => {
-        const folderIds = this.folders.map((f) => f.id)
-        return !query.queryFolderId || !folderIds.includes(query.queryFolderId)
-      })
+    pollError() {
+      return this.queriesPollError || this.foldersPollError || null
     },
     removeTitle() {
       return `Remove ${this.checkedFavorites.length} saved queries`;
-    }
+    },
+    errorList() {
+      return Object.values(this.errors);
+    },
+    isPollError() {
+      return (
+        this.queriesError === this.queriesPollError ||
+        this.foldersError === this.foldersPollError
+      );
+    },
   },
   methods: {
+    ...mapActions({
+      saveFolder: 'data/queryFolders/save',
+      saveQuery: 'data/queries/save',
+      reorderQuery: 'data/queries/reorder',
+      loadQueries: 'data/queries/loadByParentIds',
+      loadQueryFolders: 'data/queryFolders/loadByParentIds',
+      unloadQueries: 'data/queries/unloadByParentIds',
+      unloadQueryFolders: 'data/queryFolders/unloadByParentIds',
+      setQueryFilter: 'data/queries/setQueryFilter',
+    }),
+    ...mapMutations({
+      setExpandedFolderIds: 'sidebar/queries/expandedIds',
+    }),
+    setExpandedIds(expandedNodeIds) {
+      const folderIds = this.folderNodes
+        .filter((node) => expandedNodeIds.includes(node.id))
+        .map((node) => node.ref.id)
+      const expandingIds = _.difference(folderIds, this.expandedFolderIds)
+      const collapsingIds = _.difference(this.expandedFolderIds, folderIds)
+      this.setExpandedFolderIds(folderIds)
+      this.loadFolders(expandingIds)
+      this.unloadFolders(collapsingIds)
+    },
+    async loadFolders(ids) {
+      try {
+        this.loadingFolderIds = [...this.loadingFolderIds, ...ids]
+        const results = await Promise.all([
+          this.loadQueries(ids),
+          this.loadQueryFolders(ids),
+        ]);
+        const error = results.map((result) => result.error).find(Boolean)
+        if (error) {
+          this.setFolderErrors(ids, error);
+        } else {
+          this.setFolderErrors(ids, null);
+        }
+      } finally {
+        this.loadingFolderIds = _.difference(this.loadingFolderIds, ids)
+      }
+    },
+    unloadFolders(ids) {
+      this.unloadQueries(ids);
+      this.unloadQueryFolders(ids);
+      this.setFolderErrors(ids, null);
+    },
+    setFolderErrors(ids, error) {
+      for (const id of ids) {
+        this.setFolderError(id, error);
+      }
+    },
+    setFolderError(id, error) {
+      this.$set(this.errors, id, error);
+    },
     clearFilter() {
       this.filterQuery = null
     },
     createQuery() {
-      this.$root.$emit(AppEvent.newTab)
-    },
-    rename(query) {
-      this.$modal.show('rename-modal')
-      this.renameMe = query
+      this.startRootDraft("item");
     },
     exportTo(query) {
       this.$root.$emit(AppEvent.promptQueryExport, query)
     },
     importFromLocal() {
       if (!this.isCloud) {
-          this.$root.$emit(AppEvent.upgradeModal)
-          return
-        }
-        this.$root.$emit(AppEvent.promptQueryImport)
+        this.$root.$emit(AppEvent.upgradeModal, 'Cloud Workspaces')
+        return
+      }
+      this.$root.$emit(AppEvent.promptQueryImport)
     },
     importFromComputer() {
-      this.$root.$emit(AppEvent.promptQueryImportFromComputer)
+      this.$root.$emit(AppEvent.promptSqlFilesImport)
     },
     maybeUnselect(e) {
       if (!this.selected) return
@@ -242,8 +457,8 @@ export default {
         this.selected = null
       }
     },
-    refresh() {
-      this.$store.dispatch("data/queries/load")
+    async refresh() {
+      await this.$store.dispatch('refreshQueries')
     },
     isActive(item) {
       return this.activeTab && this.activeTab.queryId === item.id
@@ -254,8 +469,12 @@ export default {
     open(item) {
       this.$root.$emit('favoriteClick', item)
     },
+    openHistory(item) {
+      this.trigger('favoriteClick', item, { openHistory: true })
+    },
     async remove(favorite) {
-      if (await this.$confirm("Really delete?")) {
+      const name = favorite.title || favorite.name
+      if (await this.$confirm(`Delete "${name}"?`, undefined, { variant: "danger" })) {
         await this.$store.dispatch('data/queries/remove', favorite)
       }
     },
@@ -267,7 +486,302 @@ export default {
     },
     discardCheckedFavorites() {
       this.checkedFavorites = [];
-    }
+    },
+    createFolder() {
+      this.startRootDraft("folder");
+    },
+    startRootDraft(type) {
+      if (!this.isCloud) {
+        this.startDrafting(type, null);
+        return;
+      }
+      const parent = this.folders.find((f) => f.personal && !f.parentId);
+      if (!parent) {
+        this.$noty.error(
+          "No personal folder found. Right-click an existing folder and choose New Subfolder to create a folder instead."
+        );
+        return;
+      }
+      this.startDrafting(type, parent.id);
+      this.expandFolder(parent.id);
+    },
+    showRootContextMenu(event) {
+      this.$bks.openMenu({
+        event,
+        item: null,
+        options: [
+          {
+            name: "New Folder",
+            handler: () => this.createFolder(),
+          },
+          {
+            name: "New Query",
+            handler: () => this.startRootDraft("item"),
+          },
+        ],
+      });
+    },
+    startDrafting(type, parentId) {
+      this.draftType = type
+      this.draftParentId = parentId
+      this.drafting = true
+    },
+    stopDrafting() {
+      this.drafting = false
+    },
+    markCommited(type, id) {
+      clearTimeout(this.commitedTimeout)
+      this.commitedType = type
+      this.commitedId = id
+      this.commitedTimeout = setTimeout(() => {
+        this.commitedType = null
+        this.commitedId = null
+      }, 2000)
+    },
+    expandFolder(folderId) {
+      if (this.expandedFolderIds.includes(folderId)) {
+        return
+      }
+      this.setExpandedIds([...this.expandedNodeIds, `folder-${folderId}`])
+    },
+    async commitDraft(name = "") {
+      if (!this.drafting) {
+        return;
+      }
+      if (!name.trim()) {
+        this.stopDrafting()
+        return
+      }
+      const type = this.draftType
+      try {
+        const id = type === "folder"
+          ? await this.saveFolder({ ...this.draftFolder, name })
+          : await this.saveQuery({ ...this.draftItem, title: name })
+        this.markCommited(type, id)
+        if (type === "item") {
+          const query = this.queries.find((q) => q.id === id)
+          if (query) {
+            this.open(query)
+          } else {
+            log.warn(`Saved query ${id} not found, cannot open it.`)
+          }
+        }
+      } catch (ex) {
+        this.$noty.error(`Create ${type === "folder" ? "folder" : "query"} error: ${ex.userMessage ?? ex.message}`)
+      } finally {
+        this.stopDrafting()
+      }
+    },
+    showFolderContextMenu(event, folder) {
+      if (event.target.tagName === 'INPUT') {
+        return;
+      }
+      event.stopPropagation();
+      event.preventDefault();
+
+      const canWrite = folder.canWrite ?? true;
+      const isRoot = !folder.parentId;
+      const options = [
+        {
+          name: "New Folder",
+          handler: ({ item }) => {
+            this.startDrafting("folder", item.id);
+            this.expandFolder(item.id);
+          },
+        },
+        {
+          name: "New Query",
+          handler: ({item}) => {
+            this.startDrafting("item", item.id);
+            this.expandFolder(item.id);
+          },
+        },
+      ];
+      if (!this.isCloud || !isRoot) {
+        options.push(...[
+          {
+            type: "divider",
+            hideIf: !this.isCloud || folder.personal,
+          },
+          {
+            name: "Share",
+            handler: ({ item }) => this.share(item),
+            hideIf: !this.isCloud || folder.personal,
+          },
+          {
+            type: "divider",
+            hideIf: !canWrite,
+          },
+          {
+            name: 'Rename',
+            handler: ({ item }) => this.renameQueryFolder(item),
+            hideIf: !canWrite,
+          },
+          {
+            name: 'Move',
+            handler: ({ item }) => this.trigger(AppEvent.openMoveFolderModal, { type: 'queryFolder', value: item }),
+            hideIf: !canWrite,
+          },
+          {
+            name: 'Delete',
+            handler: ({ item }) => this.deleteFolder(item),
+            hideIf: !canWrite,
+          },
+        ].filter(({ hideIf }) => !hideIf));
+      }
+      this.$bks.openMenu({ event, item: folder, options })
+    },
+    /** @param event {import("@beekeeperstudio/ui-kit").TreeNodeMoveEvent} */
+    async handleTreeNodeMove(event) {
+      /** @type {import("@/common/utils/folderTree").ExtendedNode} */
+      const source = event.source;
+      /** @type {import("@/common/utils/folderTree").ExtendedNode} */
+      const target = event.target;
+      let reorderPayload = null;
+      let error = null;
+      try {
+        if (source.type === 'folder') {
+          // Dropped beside a node, the folder joins whatever holds that node.
+          let parentId
+          if (target.type === 'folder') {
+            parentId = event.position === 'inside'
+              ? target.ref.id
+              : target.ref.parentId
+          } else {
+            parentId = target.ref[target.parentIdKey] ?? null
+          }
+          await this.saveFolder({ ...source.ref, parentId });
+        } else if (source.type === 'item') {
+          const { parentId, position } = parseReorderTarget(event);
+          reorderPayload = {
+            item: source.ref,
+            queryFolderId: parentId,
+            position,
+          };
+          await this.reorderQuery(reorderPayload);
+        }
+      } catch (ex) {
+        error = ex;
+      }
+
+      if (error?.message.includes("[confirm_personal_move]")) {
+        const confirmed = await this.$confirm(
+          "Move to your personal folder?",
+          `All workspace members will lose access to "${source.name}".`
+        );
+        if (!confirmed) {
+          return;
+        }
+        error = null;
+        try {
+          await this.reorderQuery({ ...reorderPayload, confirm: true });
+        } catch (ex) {
+          error = ex;
+        }
+      }
+
+      if (error) {
+        let errorMessage = `Move error: ${error.userMessage ?? error.message}`;
+        if (error.message.includes("[team_folder_in_personal_tree]")) {
+          errorMessage =
+            "You can not move a team folder to your personal folder because it is shared with other workspace members.";
+        }
+        this.$noty.error(errorMessage);
+      }
+    },
+    share(folder) {
+      this.trigger(AppEvent.openShareModal, {
+        id: folder.id,
+        module: "data/queryFolders",
+      });
+    },
+    async duplicate(query) {
+      const cloned = await this.$store.dispatch('data/queries/clone', query)
+      cloned.title = 'Copy of ' + cloned.title
+      await this.$store.dispatch('data/queries/save', cloned)
+      this.$noty.success('Query duplicated')
+    },
+    renameQueryFolder(folder) {
+      this.renamingFolderId = folder.id
+    },
+    async submitFolderRename(folder, name) {
+      if (!name || name === folder.name) {
+        this.renamingFolderId = null
+        return
+      }
+      try {
+        await this.$store.dispatch('data/queryFolders/save', {
+          id: folder.id,
+          parentId: folder.parentId,
+          name,
+        })
+      } catch (ex) {
+        this.$noty.error(`Rename error: ${ex.userMessage ?? ex.message}`)
+      } finally {
+        this.renamingFolderId = null
+      }
+    },
+    async deleteFolder(folder) {
+      if (await this.$confirm(`Delete folder "${folder.name}"?`)) {
+        try {
+          await this.$store.dispatch('data/queryFolders/remove', folder)
+        } catch (e) {
+          this.$noty.error(e.message)
+        }
+      }
+    },
   }
 }
 </script>
+
+<style lang="scss" scoped>
+.drag-pending {
+  opacity: 0.5;
+}
+.tree-loading {
+  margin-top: 0.45rem;
+  margin-bottom: -0.7rem;
+  padding-left: calc(var(--depth) * 1rem + 0.55rem);
+}
+.tree-empty {
+  padding-left: calc(var(--depth) * 1rem + 0.55rem);
+  margin-block: 0.25rem;
+  opacity: 0.6;
+}
+::v-deep .alert.error-alert.tree-error {
+  margin-left: calc(var(--depth) * 1rem + 0.55rem);
+  margin-right: 0.55rem;
+}
+::v-deep .BksTree-folder {
+  .name:has(.editable-text) {
+    overflow: visible;
+  }
+
+  .editable-text  {
+    width: 100%;
+
+    input {
+      top: 60%;
+    }
+  }
+}
+
+.commited {
+  animation: commited-fade 2s ease-out;
+}
+
+@keyframes commited-fade {
+  from {
+    background: rgb(from var(--theme-primary) r g b / 25%);
+  }
+  to {
+    background: transparent;
+  }
+}
+
+.empty-state {
+  padding-top: 0.25rem;
+  padding-left: 0.5rem;
+  font-size: 0.85rem;
+}
+</style>

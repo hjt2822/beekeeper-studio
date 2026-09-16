@@ -13,10 +13,7 @@
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "sourceMap": true,
-    "types": [
-      "webpack-env",
-      "jest"
-    ],
+    "resolveJsonModule": true,
     "lib": [
       "esnext",
       "dom",

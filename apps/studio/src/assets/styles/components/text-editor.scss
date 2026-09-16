@@ -1,18 +1,34 @@
-.text-editor {
-  &.fold-without-line-numbers {
-    margin-left: -2rem;
-    .CodeMirror-linenumber {
-      display: none;
-    }
-  }
+@import "./text-editor-plugins/partial-read-only.scss";
 
+.BksTextEditor {
+  // On the scroller, not the root: codemirror's panels sit beside the
+  // scroller, so root padding pushes the vim status line off the edge.
+  padding: 0;
+
+  .cm-scroller {
+    padding: 0.75rem 0;
+  }
   &.remove-json-root-brackets .CodeMirror-code {
     & > div:first-child, & > div:last-child {
       display: none;
     }
   }
 
+  .cm-foldgutter {
+    font-weight: normal;
+  }
+
+  .cm-lineGutter-changed {
+    border-left: 2px solid $brand-warning;
+  }
+
   .CodeMirror-guttermaker-subtle {
     color: rgba($theme-base, 0.25);
+  }
+
+  .bks-error-marker {
+    text-decoration-line: underline;
+    text-decoration-style: wavy;
+    text-decoration-color: rgba($brand-danger, 0.6);
   }
 }

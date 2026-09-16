@@ -1,11 +1,12 @@
 import _ from 'lodash'
 import path from 'path'
-import { BrowserWindow, Rectangle } from "electron"
+import { BrowserWindow, globalShortcut, Rectangle } from "electron"
 import electron from 'electron'
 import platformInfo from '../common/platform_info'
 import { IGroupedUserSettings } from '../common/appdb/models/user_setting'
-import rawLog from 'electron-log'
+import rawLog from '@bksLogger'
 import querystring from 'query-string'
+import { safeOpenExternal } from './lib/electron/safeOpenExternal'
 
 
 // eslint-disable-next-line
@@ -27,19 +28,18 @@ class BeekeeperWindow {
   private win: BrowserWindow | null
   private reloaded = false
   private appUrl: string
+  public sId: string;
 
   constructor(protected settings: IGroupedUserSettings, openOptions: OpenOptions) {
     const theme = settings.theme
     const dark = electron.nativeTheme.shouldUseDarkColors || theme.value.toString().includes('dark')
-    let showFrame = settings.menuStyle && settings.menuStyle.value == 'native' ? true : false
-    let titleBarStyle: 'default' | 'hidden' = platformInfo.isWindows && settings.menuStyle.value == 'native' ? 'default' : 'hidden'
+    let titleBarStyle: 'default' | 'hidden' = platformInfo.isWindows ? 'default' : 'hidden'
 
     if (platformInfo.isWayland) {
-      showFrame = false
       titleBarStyle = 'hidden'
     }
 
-      log.info('constructing the window')
+    log.info('constructing the window')
     const preloadPath = path.join(__dirname, 'preload.js')
     console.log("PRELOAD PATH:", preloadPath)
     this.win = new BrowserWindow({
@@ -48,7 +48,7 @@ class BeekeeperWindow {
       minHeight: 600,
       backgroundColor: dark ? "#252525" : '#ffffff',
       titleBarStyle,
-      frame: showFrame,
+      frame: false,
       webPreferences: {
         preload: preloadPath,
         nodeIntegration: false,
@@ -56,12 +56,13 @@ class BeekeeperWindow {
         spellcheck: false,
         sandbox: false,
       },
-      icon: getIcon()
+      icon: getIcon(),
+      show: false,
     })
 
     const devUrl = 'http://localhost:3003'
-    const startUrl = 'app://./renderer/index.html'
-    let appUrl = platformInfo.isDevelopment ? devUrl : startUrl
+    const startUrl = 'app://./index.html'
+    const appUrl = platformInfo.isDevelopment ? devUrl : startUrl
     // const appUrl = startUrl
     const queryObj: any = openOptions ? { ...openOptions } : {}
 
@@ -79,9 +80,15 @@ class BeekeeperWindow {
       if (url === this.appUrl) return // this is good
       log.info("navigate to", url)
       e.preventDefault()
-      const u = new URL(url)
+      let u: URL
+      try {
+        u = new URL(url)
+      } catch {
+        log.warn('will-navigate: ignoring invalid URL', url)
+        return
+      }
       u.searchParams.append('ref', 'bks-app')
-      electron.shell.openExternal(u.toString());
+      safeOpenExternal(u.toString());
     })
 
     this.win.webContents.setWindowOpenHandler(({ url }) => {
@@ -101,6 +108,26 @@ class BeekeeperWindow {
       }
     })
 
+    this.win.on('maximize', () => {
+      this.win.webContents.send(`maximize-${this.sId}`)
+      this.settings.windowMaximized.value = true
+      this.settings.windowMaximized.save().then(_.noop).catch(log.error)
+    })
+
+    this.win.on('unmaximize', () => {
+      this.win.webContents.send(`unmaximize-${this.sId}`)
+      this.settings.windowMaximized.value = false
+      this.settings.windowMaximized.save().then(_.noop).catch(log.error)
+    })
+
+    this.win.on('enter-full-screen', () => {
+      this.win.webContents.send(`enter-full-screen-${this.sId}`)
+    })
+
+    this.win.on('leave-full-screen', () => {
+      this.win.webContents.send(`leave-full-screen-${this.sId}`)
+    })
+
     this.initialize()
       .then(() => log.debug("initialize finished"))
       .catch((ex) => log.error("INITIALIZE ERROR", ex)  )
@@ -108,23 +135,30 @@ class BeekeeperWindow {
 
   private async initialize() {
     // Install Vue Devtools
-    try {
-      // log.debug("installing vue devtools")
-      // installExtension({
-          // id: 'ljjemllljcmogpfapbkkighbhhppjdbg',
-          // electron: '>=1.2.1'
-      // })
-      // log.debug("devtools loaded", name)
-    } catch (e) {
-      log.error('devtools failed to install:', e.toString())
+    // try {
+    //   log.debug("installing vue devtools")
+    //   installExtension({
+    //       id: 'ljjemllljcmogpfapbkkighbhhppjdbg',
+    //       electron: '>=1.2.1'
+    //   })
+    //   log.debug("devtools loaded", name)
+    // } catch (e) {
+    //   log.error('devtools failed to install:', e.toString())
+    // }
+
+    if (this.settings.windowMaximized.value) {
+      this.win.maximize()
     }
+
+    this.win.show()
 
     await this.win.loadURL(this.appUrl)
     if ((platformInfo.env.development && !platformInfo.env.test) || platformInfo.debugEnabled) {
+      globalShortcut.register('F12', this.win.webContents.toggleDevTools.bind(this.win.webContents))
+      globalShortcut.register('CommandOrControl+Shift+I', this.win.webContents.toggleDevTools.bind(this.win.webContents))
+
       this.win.webContents.openDevTools()
     }
-
-
   }
 
   private getWindowPosition(settings: IGroupedUserSettings) {

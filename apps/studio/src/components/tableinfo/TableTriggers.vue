@@ -12,12 +12,13 @@
           </div>
         </div>
         <div class="table-subheader">
-          <div class="table-title">
-            <h2>Triggers</h2>
-          </div>
-          <div class="table-actions">
-            <!-- <a class="btn btn-flat btn-icon btn-small"><i class="material-icons">add</i> Trigger</a> -->
-          </div>
+          <table-info-toolbar
+            :search-suffix="structureFilterSuffix"
+            filter-placeholder="Filter triggers"
+            @search="setStructureFilterQuery"
+            @copy="copyStructure"
+            @refresh="$emit('refresh')"
+          />
         </div>
         <div
           class="table-triggers"
@@ -28,7 +29,7 @@
 
     <div class="expand" />
 
-    <status-bar class="tabulator-footer">
+    <status-bar class="tabulator-footer" :active="active">
       <div class="flex flex-middle flex-right statusbar-actions">
         <slot name="footer" />
         <slot name="actions" />
@@ -39,18 +40,25 @@
 <script>
 import {Tabulator, TabulatorFull} from 'tabulator-tables'
 import data_mutators from '../../mixins/data_mutators'
-import globals from '../../common/globals'
 import StatusBar from '../common/StatusBar.vue'
+import TableInfoToolbar from './TableInfoToolbar.vue'
 import { mapGetters, mapState } from 'vuex'
+import { SelectableCellMixin } from '@/mixins/selectableCell';
+import { StructureCopyMixin } from '@/mixins/structureCopy';
+import { StructureFilterMixin } from '@/mixins/structureFilter';
+import { copyCellMenu } from '@/lib/menu/tableMenu';
+
 
 export default {
   components: {
     StatusBar,
+    TableInfoToolbar,
   },
-  mixins: [data_mutators],
+  mixins: [data_mutators, SelectableCellMixin, StructureCopyMixin, StructureFilterMixin],
   props: ["table", "tabId", "active", "properties"],
   data() {
     return {
+      tabulator: null,
       tableTriggers: null
     }
   },
@@ -66,17 +74,17 @@ export default {
     },
     sqliteTableColumns() {
       return [
-        { field: 'name', title: 'Name', tooltip: true},
-        { field: 'sql', title: 'SQL', tooltip: true}
+        { field: 'name', title: 'Name', tooltip: true, contextMenu: copyCellMenu, cellDblClick: (e, cell) => this.handleCellDoubleClick(cell)},
+        { field: 'sql', title: 'SQL', tooltip: true, contextMenu: copyCellMenu, cellDblClick: (e, cell) => this.handleCellDoubleClick(cell)}
       ]
     },
     normalTableColumns() {
       return [
-        { field: 'name', title: "Name", tooltip: true},
-        { field: 'timing', title: "Timing"},
-        { field: 'manipulation', title: "Manipulation"},
-        { field: 'action', title: "Action", tooltip: true, widthGrow: 2.5},
-        { field: 'condition', title: "Condition", formatter: this.cellFormatter}
+        { field: 'name', title: "Name", tooltip: true, contextMenu: copyCellMenu, cellDblClick: (e, cell) => this.handleCellDoubleClick(cell)},
+        { field: 'timing', title: "Timing", contextMenu: copyCellMenu, cellDblClick: (e, cell) => this.handleCellDoubleClick(cell)},
+        { field: 'manipulation', title: "Manipulation", contextMenu: copyCellMenu, cellDblClick: (e, cell) => this.handleCellDoubleClick(cell)},
+        { field: 'action', title: "Action", tooltip: true, widthGrow: 2.5, contextMenu: copyCellMenu, cellDblClick: (e, cell) => this.handleCellDoubleClick(cell)},
+        { field: 'condition', title: "Condition", formatter: this.cellFormatter, contextMenu: copyCellMenu, cellDblClick: (e, cell) => this.handleCellDoubleClick(cell)}
       ]
     },
     tableData() {
@@ -96,7 +104,7 @@ export default {
       columnDefaults: {
         tooltip: true,
         headerSort: true,
-        maxInitialWidth: globals.maxColumnWidthTableInfo,
+        maxInitialWidth: this.$bksConfig.ui.tableTriggers.maxColumnWidth,
       },
       placeholder: "No triggers",
       layout: 'fitColumns'

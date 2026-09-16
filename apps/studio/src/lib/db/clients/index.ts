@@ -8,6 +8,9 @@ export function findClient(key: string): Client | undefined {
     get supportsSocketPath(): boolean {
       return this.supports('server:socketPath');
     },
+    get supportsSocketPathWithCustomPort(): boolean {
+      return this.supports('server:socketPathWithCustomPort')
+    },
     supports(feature: string): boolean {
       return !client.disabledFeatures?.includes(feature);
     },
@@ -23,6 +26,7 @@ interface ClientConfig {
   key: string,
   name: string,
   defaultPort?: number,
+  topLevelEntity?: string,
   defaultDatabase?: string,
   disabledFeatures?: string[],
 }
@@ -37,7 +41,8 @@ export const CLIENTS: ClientConfig[] = [
     defaultPort: 26257,
     disabledFeatures: [
       'server:domain',
-      'server:socketPath'
+      'server:socketPath',
+      'server:socketPathWithCustomPort',
     ],
   },
   {
@@ -47,6 +52,7 @@ export const CLIENTS: ClientConfig[] = [
     disabledFeatures: [
       'server:schema',
       'server:domain',
+      'server:socketPathWithCustomPort',
     ],
   },
   {
@@ -56,11 +62,21 @@ export const CLIENTS: ClientConfig[] = [
     disabledFeatures: [
       'server:schema',
       'server:domain',
+      'server:socketPathWithCustomPort',
     ],
   },
   {
     key: 'postgresql',
     name: 'PostgreSQL',
+    defaultDatabase: 'postgres',
+    defaultPort: 5432,
+    disabledFeatures: [
+      'server:domain',
+    ],
+  },
+  {
+    key: 'greengage',
+    name: 'GreengageDB',
     defaultDatabase: 'postgres',
     defaultPort: 5432,
     disabledFeatures: [
@@ -74,7 +90,8 @@ export const CLIENTS: ClientConfig[] = [
     defaultPort: 5432,
     disabledFeatures: [
       'server:domain',
-      'server:socketPath'
+      'server:socketPath',
+      'server:socketPathWithCustomPort',
     ],
   },
   {
@@ -82,7 +99,8 @@ export const CLIENTS: ClientConfig[] = [
     name: 'Microsoft SQL Server',
     defaultPort: 1433,
     disabledFeatures: [
-      'server:socketPath'
+      'server:socketPath',
+      'server:socketPathWithCustomPort',
     ],
   },
   {
@@ -94,6 +112,7 @@ export const CLIENTS: ClientConfig[] = [
       'server:host',
       'server:port',
       'server:socketPath',
+      'server:socketPathWithCustomPort',
       'server:user',
       'server:password',
       'server:schema',
@@ -114,6 +133,21 @@ export const CLIENTS: ClientConfig[] = [
       'server:domain',
       'scriptCreateTable',
       'cancelQuery',
+      'server:socketPathWithCustomPort',
+    ],
+  },
+  {
+    key: 'scylladb',
+    name: 'ScyllaDB',
+    defaultPort: 9042,
+    disabledFeatures: [
+      'server:ssl',
+      'server:socketPath',
+      'server:schema',
+      'server:domain',
+      'scriptCreateTable',
+      'cancelQuery',
+      'server:socketPathWithCustomPort',
     ],
   },
   {
@@ -121,7 +155,8 @@ export const CLIENTS: ClientConfig[] = [
     name: 'Oracle',
     defaultPort: 1521,
     disabledFeatures: [
-      'server:socketPath'
+      'server:socketPath',
+      'server:socketPathWithCustomPort',
     ]
   },
   {
@@ -131,6 +166,7 @@ export const CLIENTS: ClientConfig[] = [
     disabledFeatures: [
       'server:ssl',
       'server:socketPath',
+      'server:socketPathWithCustomPort',
       'server:user',
       'server:password',
       'server:schema',
@@ -146,6 +182,17 @@ export const CLIENTS: ClientConfig[] = [
     disabledFeatures: [
       'server:schema',
       'server:socketPath',
+      'server:socketPathWithCustomPort',
+    ],
+  },
+  {
+    key: 'starrocks',
+    name: 'StarRocks',
+    defaultPort: 9030,
+    disabledFeatures: [
+      'server:schema',
+      'server:domain',
+      'server:socketPathWithCustomPort',
     ],
   },
   {
@@ -155,6 +202,7 @@ export const CLIENTS: ClientConfig[] = [
     disabledFeatures: [
       'server:schema',
       'server:domain',
+      'server:socketPathWithCustomPort',
     ],
   },
   {
@@ -167,6 +215,7 @@ export const CLIENTS: ClientConfig[] = [
       'server:host',
       'server:port',
       'server:socketPath',
+      'server:socketPathWithCustomPort',
       'server:user',
       'server:password',
       'server:schema',
@@ -175,5 +224,115 @@ export const CLIENTS: ClientConfig[] = [
       'scriptCreateTable',
       'cancelQuery',
     ],
+  },
+  {
+    key: 'duckdb',
+    name: 'DuckDB',
+    defaultDatabase: ':memory:',
+    disabledFeatures: [
+      'server:ssl',
+      'server:host',
+      'server:port',
+      'server:socketPath',
+      'server:user',
+      'server:password',
+      'server:schema',
+      'server:domain',
+      'server:ssh',
+      'cancelQuery', // TODO how to do this?
+    ],
+  },
+  {
+    key: 'trino',
+    name: 'Trino',
+    topLevelEntity: 'Catalog',
+    defaultPort: 8080,
+    disabledFeatures: [
+      'server:socketPath',
+      'cancelQuery', // TODO how to do this?
+    ],
+  },
+  {
+    key: 'clickhouse',
+    name: 'ClickHouse',
+    defaultPort: 8123,
+    disabledFeatures: [
+      'server:socketPath',
+    ],
+  },
+  {
+    key: 'mongodb',
+    name: 'MongoDB'
+  },
+  {
+    key: 'sqlanywhere',
+    name: 'SqlAnywhere',
+    defaultPort: 2638,
+    disabledFeatures: [
+      'server:ssl',
+      'server:socketPath'
+    ]
+  },
+  {
+    key: 'surrealdb',
+    name: 'SurrealDB',
+    defaultPort: 8000,
+    disabledFeatures: [
+      'server:socketPath',
+      'server:socketPathWithCustomPort',
+      'server:ssl'
+    ]
+  },
+  {
+    key: 'redis',
+    name: 'Redis',
+    defaultPort: 6379,
+    defaultDatabase: '0',
+    disabledFeatures: [
+      'server:socketPath',
+      'server:socketPathWithCustomPort',
+      'server:schema',
+      'server:domain',
+      'server:ssh',
+      'server:user',
+      'scriptCreateTable',
+      'cancelQuery'
+    ],
+  },
+  {
+    key: 'bedrock',
+    name: 'Bedrock',
+    defaultPort: 3306,
+    disabledFeatures: [
+      'server:schema',
+      'server:domain',
+      'server:socketPathWithCustomPort',
+    ]
+  },
+  {
+    key: 'dynamodb',
+    name: 'DynamoDB',
+    defaultPort: 8000,
+    disabledFeatures: [
+      'server:host',
+      'server:port',
+      'server:user',
+      'server:password',
+      'server:domain',
+      'server:schema',
+      'server:ssl',
+      'server:ssh',
+      'server:socketPath',
+      'server:socketPathWithCustomPort',
+      'scriptCreateTable',
+      'cancelQuery',
+    ],
+  },
+  {
+    key: 'snowflake',
+    name: 'Snowflake',
+    disabledFeatures: [
+
+    ]
   }
 ];

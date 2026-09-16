@@ -95,6 +95,11 @@ import { TransportExport } from '@/common/transport/TransportExport';
       exportsAllDone() {
         if (this.exportsAllDone && !this.modalShown) {
           this.modalShown = true;
+          // Check for preventAutoShowSuccessModal property
+          if (this.stepperProps.preventAutoShowSuccessModal) {
+            return; // Don't show any modals if preventAutoShowSuccessModal is true
+          }
+          
           if (this.exports.some((e) => e.status === 'aborted' || e.status === 'error')) {
             this.$modal.show(this.stepperProps.failModalName)
           } else {
@@ -105,7 +110,7 @@ import { TransportExport } from '@/common/transport/TransportExport';
     },
     methods: {
       showFiles() {
-        this.$native.files.open(this.tableOptions.filePath)
+        this.$native.files.showItemInFolder(this.tableOptions.filePath)
       },
       getTableExport(table): TransportExport {
         const exportFile = `${this.tableOptions.filePath}/${table.name}`;

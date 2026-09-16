@@ -2,12 +2,16 @@ import { TableFilter, TableOrView } from "@/lib/db/models";
 import { Transport } from ".";
 import _ from "lodash";
 import ISavedQuery from "../interfaces/ISavedQuery";
+import { JsonValue } from "@/types";
+import { LoadViewParams } from "@beekeeperstudio/plugin";
 
-type TabType = 'query' | 'table' | 'table-properties' | 'settings' | 'table-builder' | 'backup' | 'import-export-database' | 'restore' | 'import-table'
+export type PluginTabType = 'plugin-base' | 'plugin-shell';
+export type CoreTabType = 'query' | 'table' | 'table-properties' | 'settings' | 'table-builder' | 'backup' | 'import-export-database' | 'restore' | 'import-table' | 'shell'
+export type TabType = CoreTabType | PluginTabType
 
-const pickable = ['title', 'tabType', 'unsavedChanges', 'unsavedQueryText', 'tableName', 'schemaName']
+const pickable = ['title', 'tabType', 'unsavedChanges', 'unsavedQueryText', 'tableName', 'schemaName', 'context']
 
-export interface TransportOpenTab extends Transport {
+export interface TransportOpenTab<Context = {}> extends Transport {
   tabType: TabType,
   unsavedChanges: boolean,
   title: string,
@@ -16,6 +20,7 @@ export interface TransportOpenTab extends Transport {
   position: number,
   active: boolean,
   queryId?: number,
+  usedQueryId?: number,
   unsavedQueryText?: string,
   tableName?: string,
   schemaName?: string,
@@ -23,7 +28,79 @@ export interface TransportOpenTab extends Transport {
   connectionId: number,
   workspaceId?: number,
   filters?: string,
+  lastActive?: Date|null,
+  deletedAt?: Date|null
   isRunning: boolean, // not on the actual model, but used in frontend
+  isTransaction: boolean, // not on the actual model, but used in frontend
+  context: Context
+}
+
+/** Used when creating a new tab */
+export type TransportOpenTabInit<Context = {}> = Omit<
+  TransportOpenTab<Context>,
+  | "id"
+  | "createdAt"
+  | "updatedAt"
+  | "version"
+  | "isRunning"
+  | "connectionId"
+  | "alert"
+  | "position"
+  | "active"
+>;
+
+export type TransportPluginShellTab = TransportOpenTab<PluginTabContext>;
+export type TransportPluginTab = TransportOpenTab<PluginTabContext>;
+
+export type PluginTabContext = {
+  pluginId: string;
+  pluginTabTypeId: string;
+  /** A plugin can save the state of the tab here. For example, an AI plugin
+     * can save the chat conversation here */
+  data?: JsonValue;
+  /** The command to execute on the plugin. Plugins cannot change this.
+   * @since 5.4.0 */
+  command?: string;
+  /** Parameters to be passed to the plugin. Plugins cannot change this.
+   * @since 5.4.0 */
+  params?: LoadViewParams;
+};
+
+export namespace TabTypeConfig {
+  interface BaseConfig {
+    type: TabType;
+    name: string;
+    /** Used for the dropdown menu next to the "new tab" icon. */
+    menuItem?: {
+      label: string;
+      shortcut?: string;
+      /** For plugins */
+      command: string;
+      /** For plugins */
+      params?: LoadViewParams;
+    };
+  }
+
+  interface CoreConfig extends BaseConfig {
+    type: CoreTabType;
+  }
+
+  /** `"plugin-shell"` consists of two parts; an iframe at the top and a table at
+   * the bottom. This tab looks almost identical to the query tab. The only
+   * difference is, in this tab, the result table can be collapsed completely. */
+  export interface PluginConfig extends BaseConfig, PluginRef {
+    type: PluginTabType;
+    icon?: string; // from material-icons
+  }
+
+  export interface PluginRef {
+    /** Use plugin id from the manifest */
+    pluginId: string;
+    /** Use view id from the manifest. */
+    pluginTabTypeId: string;
+  }
+
+  export type Config = CoreConfig | PluginConfig;
 }
 
 export function setFilters(obj: TransportOpenTab, filters: Nullable<TableFilter[]>) {
@@ -61,6 +138,30 @@ export function duplicate(obj: TransportOpenTab): TransportOpenTab {
   return result;
 }
 
+/**
+ * Decide what the query editor should show when a tab is (re)opened.
+ * - originalText: the saved baseline used for dirty-comparison / discard.
+ * - editorText:   what to load into the editor — the auto-saved in-progress
+ *                 edits when the tab was left dirty, otherwise the baseline.
+ *
+ * `savedText` is the text of the linked saved query (FavoriteQuery / cloud
+ * query), or null/undefined for a query that has never been saved.
+ */
+export function resolveEditorText(
+  obj: Pick<TransportOpenTab, 'unsavedChanges' | 'unsavedQueryText'>,
+  savedText?: string | null
+): { originalText: string | null; editorText: string | null } {
+  const baselineText = savedText || obj.unsavedQueryText || null
+  // When the tab was left dirty, the auto-saved edits live in unsavedQueryText.
+  // Restore those into the editor while keeping the saved text as the baseline,
+  // so the dirty indicator shows and discarding reverts to the saved version.
+  const editorText =
+    obj.unsavedChanges && obj.unsavedQueryText != null
+      ? obj.unsavedQueryText
+      : baselineText
+  return { originalText: baselineText, editorText }
+}
+
 export function findTable(obj: TransportOpenTab, tables: TableOrView[]): TableOrView | null {
   const result = tables.find((t) => {
     return obj.tableName === t.name &&
@@ -81,7 +182,7 @@ export function matches(obj: TransportOpenTab, other: TransportOpenTab): boolean
   }
 
   switch (other.tabType) {
-    case 'table-properties': 
+    case 'table-properties':
       return obj.tableName === other.tableName &&
         (obj.schemaName || null) === (other.schemaName || null) &&
         (obj.entityType || null) === (other.entityType || null) &&
@@ -95,7 +196,8 @@ export function matches(obj: TransportOpenTab, other: TransportOpenTab): boolean
       // at a time.
       return obj.tabType === 'import-export-database'
     case 'query':
-      return obj.queryId === other.queryId
+      return (obj.queryId === other.queryId && !_.isNil(obj.queryId) && !_.isNil(other.queryId)) ||
+        (obj.usedQueryId === other.usedQueryId && !_.isNil(obj.usedQueryId) && !_.isNil(other.usedQueryId))
     case 'backup':
       return obj.tabType === 'backup';
     case 'restore':

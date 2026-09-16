@@ -6,16 +6,24 @@ import { ITempHandlers } from "@/handlers/tempHandlers";
 // commercial
 import { IConnectionHandlers } from "./connHandlers";
 import { IExportHandlers } from "./exportHandlers";
+import { IImportHandlers } from "./importHandlers";
 import { IBackupHandlers } from "./backupHandlers";
+import { ICliHandlers } from "./cliHandlers";
 import { IEnumHandlers } from "./enumHandlers";
+import { IAwsHandlers } from "./awsHandlers";
+import { IWorkspaceHandlers } from "@/handlers/workspaceHandlers";
 
-export interface Handlers extends
-  IConnectionHandlers,
-  IQueryHandlers,
-  IGeneratorHandlers,
-  IExportHandlers,
-  IBackupHandlers,
-  IFileHandlers,
-  IEnumHandlers,
-  ITempHandlers
-   {};
+export interface Handlers
+  extends IConnectionHandlers,
+    IQueryHandlers,
+    IGeneratorHandlers,
+    IImportHandlers,
+    IExportHandlers,
+    IBackupHandlers,
+    ICliHandlers,
+    IFileHandlers,
+    IEnumHandlers,
+    ITempHandlers,
+    IAwsHandlers,
+    IWorkspaceHandlers
+    {}

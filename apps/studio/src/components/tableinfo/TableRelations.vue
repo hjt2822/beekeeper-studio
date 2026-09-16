@@ -20,23 +20,16 @@
         </div>
 
         <div class="table-subheader">
-          <div class="table-title">
-            <h2>Relations</h2>
-          </div>
-          <div class="expand" />
-          <div class="actions">
-            <a
-              @click.prevent="$emit('refresh')"
-              v-tooltip="`${ctrlOrCmd('r')} or F5`"
-              class="btn btn-link btn-fab"
-            ><i class="material-icons">refresh</i></a>
-            <a
-              v-if="enabled && canAdd"
-              @click.prevent="addRow"
-              v-tooltip="ctrlOrCmd('n')"
-              class="btn btn-primary btn-fab"
-            ><i class="material-icons">add</i></a>
-          </div>
+          <table-info-toolbar
+            :search-suffix="structureFilterSuffix"
+            filter-placeholder="Filter relations"
+            :show-add="enabled && canAdd"
+            add-label="Relation"
+            @search="setStructureFilterQuery"
+            @add="addRow"
+            @copy="copyStructure"
+            @refresh="$emit('refresh')"
+          />
         </div>
         <div
           class="table-relations"
@@ -47,7 +40,7 @@
 
     <div class="expand" />
 
-    <status-bar class="tabulator-footer">
+    <status-bar class="tabulator-footer" :active="active">
       <div class="flex flex-middle flex-right statusbar-actions">
         <slot name="footer" />
         <x-button
@@ -106,21 +99,28 @@ import StatusBar from '../common/StatusBar.vue'
 import { TabulatorStateWatchers, trashButton, vueEditor } from '@shared/lib/tabulator/helpers'
 import NullableInputEditorVue from '@shared/components/tabulator/NullableInputEditor.vue'
 import { mapGetters, mapState } from 'vuex'
-import { CreateRelationSpec, Dialect, DialectTitles, FormatterDialect, RelationAlterations } from '@shared/lib/dialects/models'
+import { CreateRelationSpec, Dialect, DialectTitles, FormatterDialect, RelationAlterations, TableKey } from '@shared/lib/dialects/models'
 import { TableColumn, TableOrView } from '@/lib/db/models'
 import _ from 'lodash'
 import { format } from 'sql-formatter'
 import { AppEvent } from '@/common/AppEvent'
-import rawLog from 'electron-log'
+import rawLog from '@bksLogger'
 import ErrorAlert from '../common/ErrorAlert.vue'
+import TableInfoToolbar from './TableInfoToolbar.vue'
 const log = rawLog.scope('TableRelations');
 import { escapeHtml } from '@shared/lib/tabulator'
+import { SelectableCellMixin } from '@/mixins/selectableCell';
+import { StructureCopyMixin } from '@/mixins/structureCopy';
+import { StructureFilterMixin } from '@/mixins/structureFilter';
+import { copyCellMenu } from '@/lib/menu/tableMenu';
 
 export default Vue.extend({
+  mixins: [SelectableCellMixin, StructureCopyMixin, StructureFilterMixin],
   props: ["table", "tabId", "active", "properties", 'tabState'],
   components: {
     StatusBar,
-    ErrorAlert
+    ErrorAlert,
+    TableInfoToolbar
   },
   data() {
     return {
@@ -132,20 +132,21 @@ export default Vue.extend({
     }
   },
   computed: {
-    ...mapState(['tables', 'connection']),
+    ...mapState(['tables', 'connection', 'usedConfig']),
     ...mapGetters(['schemas', 'dialect', 'schemaTables', 'dialectData']),
     enabled() {
-      return !this.dialectData.disabledFeatures?.alter?.everything
+      return !this.usedConfig.readOnlyMode &&
+        !this.dialectData.disabledFeatures?.alter?.everything &&
+        !this.dialectData?.disabledFeatures?.relations;
     },
     hotkeys() {
       if (!this.active) return {}
-      const result = {}
-      result['f5'] = () => this.$emit('refresh')
-      result[this.ctrlOrCmd('n')] = this.addRow.bind(this)
-      result[this.ctrlOrCmd('r')] = () => this.$emit('refresh')
-      result[this.ctrlOrCmd('s')] = this.submitApply.bind(this)
-      result[this.ctrlOrCmd('shift+s')] = this.submitSql.bind(this)
-      return result
+      return this.$vHotkeyKeymap({
+        'general.refresh': () => this.$emit('refresh'),
+        'general.addRow': this.addRow.bind(this),
+        'general.save': this.submitApply.bind(this),
+        'general.openInSqlEditor': this.submitSql.bind(this)
+      })
     },
     notice() {
       const results = []
@@ -186,7 +187,8 @@ export default Vue.extend({
           widthGrow: 2,
           editable,
           editor: vueEditor(NullableInputEditorVue),
-
+          contextMenu: copyCellMenu,
+          cellDblClick: (e, cell) => this.handleCellDoubleClick(cell)
         },
         {
           field: 'fromColumn',
@@ -196,17 +198,20 @@ export default Vue.extend({
           editorParams: {
             // @ts-expect-error Incorrectly typed
             valuesLookup: () => this.table.columns.map((c) => escapeHtml(c.columnName))
-          }
+          },
+          contextMenu: copyCellMenu,
+          cellDblClick: (e, cell) => this.handleCellDoubleClick(cell)
         },
+        // @ts-expect-error Incorrectly typed
         ...( showSchema ? [{
           field: 'toSchema',
           title: "FK Schema",
           editable,
           editor: 'list' as any,
           editorParams: {
-            // @ts-expect-error Incorrectly typed
             valuesLookup: () => this.schemas.map((s) => escapeHtml(s))
           },
+          contextMenu: copyCellMenu,
           cellEdited: (cell) => cell.getRow().getCell('toTable')?.setValue(null)
         }] : []),
         {
@@ -214,31 +219,38 @@ export default Vue.extend({
           title: "FK Table",
           editable,
           editor: 'list',
+          // @ts-expect-error Incorrectly typed
           editorParams: {
-            // @ts-expect-error Incorrectly typed
             valuesLookup: this.getTables
           },
-          cellEdited: (cell) => cell.getRow().getCell('toColumn')?.setValue(null)
+          cellEdited: (cell) => cell.getRow().getCell('toColumn')?.setValue(null),
+          contextMenu: copyCellMenu,
+          cellDblClick: (e, cell) => this.handleCellDoubleClick(cell)
         },
         {
           field: 'toColumn',
           title: "FK Column",
           editable,
           editor: 'list',
+          // @ts-expect-error Incorrectly typed
           editorParams: {
-            // @ts-expect-error Incorrectly typed
             valuesLookup: this.getColumns
           },
+          contextMenu: copyCellMenu,
+          cellDblClick: (e, cell) => this.handleCellDoubleClick(cell)
         },
         {
           field: 'onUpdate',
           title: "On Update",
           editor: 'list',
           editable,
+          // @ts-expect-error Incorrectly typed
           editorParams: {
             values: this.dialectData.constraintActions,
             defaultValue: 'NO ACTION'
-          }
+          },
+          contextMenu: copyCellMenu,
+          cellDblClick: (e, cell) => this.handleCellDoubleClick(cell)
         },
         {
           field: 'onDelete',
@@ -249,13 +261,16 @@ export default Vue.extend({
           editorParams: {
             values: this.dialectData.constraintActions,
             defaultValue: 'NO ACTION',
-          }
+          },
+          contextMenu: copyCellMenu,
+          cellDblClick: (e, cell) => this.handleCellDoubleClick(cell)
         },
       ]
-      return this.canDrop ? [...results, trashButton(this.removeRow)] : results
+      return this.canDrop && !this.usedConfig.readOnlyMode ? [...results, trashButton(this.removeRow)] : results
     },
     tableData() {
-      return this.properties.relations || []
+      return (this.properties.relations || [])
+        .filter((r: TableKey) => r.fromTable === this.table.name)
     },
   },
   watch: {

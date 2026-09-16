@@ -1,27 +1,45 @@
 <template>
   <div
+    v-if="isRestore && usedConfig.readOnlyMode"
     class="tabcontent"
-    v-if="dataLoaded"
   >
-    <div
-      v-if="!isSupported"
-      class="not-supported"
-    >
+    <div class="not-supported">
+      <div class="card-flat padding">
+        <h3 class="card-title">
+          Read Only Mode is enabled for this connection. Restoring is disabled
+        </h3>
+      </div>
+    </div>
+  </div>
+  <div
+    v-else-if="!isSupported"
+    class="tabcontent"
+  >
+    <div class="not-supported">
       <div class="card-flat padding">
         <h3 class="card-title">
           Beekeeper does not currently support {{ isRestore ? 'restore' : 'backups' }} for {{ dialect }} ☹️
         </h3>
       </div>
     </div>
-    <div v-else-if="!hasActiveLicense">
-      <upsell-content></upsell-content>
+  </div>
+  <div
+    v-else-if="isCommunity"
+    class="upgrade-panel-tab-wrapper"
+  >
+    <upgrade-panel :feature-name="isRestore ? 'Database Restore' : 'Database Backup'" standalone />
+  </div>
+  <div
+    v-else-if="dataLoaded"
+    class="tabcontent"
+  >
+    <div v-if="!backupRunning" class="backup-stepper-wrapper">
+      <Stepper
+        :steps="steps"
+        :button-portal-target="isRestore ? 'restore-stepper-buttons' : 'backup-stepper-buttons'"
+        @finished="runBackup"
+      />
     </div>
-    <Stepper
-      v-else-if="!backupRunning"
-      :steps="steps"
-      :button-portal-target="isRestore ? 'restore-stepper-buttons' : 'backup-stepper-buttons'"
-      @finished="runBackup"
-    />
     <div
       v-else
       class="backup-tab-progress"
@@ -90,13 +108,12 @@
       </modal>
       <BackupProgress
         :failed="this.failed"
-        @openLog="openLog"
         @showLog="showLog"
         @retry="retry"
       />
     </div>
     <div class="expand" />
-    <status-bar>
+    <status-bar :active="active">
       <div class="statusbar-info col flex expand">
         <span
           class="statusbar-item"
@@ -121,7 +138,7 @@ import BackupSettings from './backup/BackupSettings.vue';
 import BackupReview from './backup/BackupReview.vue';
 import BackupProgress from './backup/BackupProgress.vue';
 import Stepper from './stepper/Stepper.vue';
-import UpsellContent from '@/components/connection/UpsellContent.vue'
+import UpgradePanel from '@/components/upsell/UpgradePanel.vue'
 import { Step } from './stepper/models';
 import { mapGetters, mapState } from 'vuex';
 import StatusBar from '@/components/common/StatusBar.vue';
@@ -131,7 +148,7 @@ export default Vue.extend({
     Stepper,
     BackupProgress,
     StatusBar,
-    UpsellContent
+    UpgradePanel
   },
   props: ['connection', 'tab', 'isRestore', 'active'],
   data() {
@@ -163,7 +180,7 @@ export default Vue.extend({
       'backupFeatures': 'backups/supportedFeatures',
       'logFile': 'backups/logFilePath',
       'dialect': 'dialect',
-      'hasActiveLicense': 'licenses/hasActiveLicense'
+      'isCommunity': 'isCommunity',
     }),
     ...mapState('backups', {
       'backupTables': 'backupTables',
@@ -171,6 +188,7 @@ export default Vue.extend({
       'failed': 'failed',
     }),
     ...mapState({
+      'usedConfig': 'usedConfig',
       'supportedFeatures': 'supportedFeatures'
     }),
     includedTables() {
@@ -233,9 +251,6 @@ export default Vue.extend({
     focusTryAgain() {
       if (!this.$refs['ok'] || this.$refs['ok'].length === 0) return;
       this.$refs['ok'].focus();
-    },
-    openLog() {
-      this.$native.files.open(this.logFile);
     },
     showLog() {
       this.$native.files.showItemInFolder(this.logFile);

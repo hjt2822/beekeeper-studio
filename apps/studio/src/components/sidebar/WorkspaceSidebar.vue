@@ -42,7 +42,7 @@
 </template>
 
 <script lang="ts">
-import { IWorkspace } from '@/common/interfaces/IWorkspace'
+import { IWorkspace, LocalWorkspace } from '@/common/interfaces/IWorkspace'
 import ContentPlaceholder from '@/components/common/loading/ContentPlaceholder.vue'
 import ContentPlaceholderImg from '@/components/common/loading/ContentPlaceholderImg.vue'
 import WorkspaceAvatar from '@/components/common/WorkspaceAvatar.vue'
@@ -52,6 +52,7 @@ import { WSWithClient } from '@/store/modules/CredentialsModule'
 import Vue from 'vue'
 import { mapGetters, mapState } from 'vuex'
 import NewWorkspaceButton from './connection/NewWorkspaceButton.vue'
+import { AppEvent } from '@/common/AppEvent'
 
 export default Vue.extend({
 components: { NewWorkspaceButton, WorkspaceAvatar, AccountStatusButton, ContentPlaceholderImg, ContentPlaceholder },
@@ -59,6 +60,7 @@ components: { NewWorkspaceButton, WorkspaceAvatar, AccountStatusButton, ContentP
   computed: {
     ...mapState('credentials', ['credentials', 'loading']),
     ...mapState(['workspaceId']),
+    ...mapState('settings', ['settings']),
     ...mapGetters('credentials', { 'availableWorkspaces': 'workspaces'}),
 
   },
@@ -69,10 +71,26 @@ components: { NewWorkspaceButton, WorkspaceAvatar, AccountStatusButton, ContentP
       ]
       if (blob.workspace.isOwner) {
         result.push({
+          name: "Rename Workspace",
+          slug: 'rename',
+          handler: () => this.$root.$emit(AppEvent.promptRenameWorkspace, {
+            workspace: blob.workspace,
+            client: blob.client,
+          }),
+        }, {
           name: "Add Users",
           slug: 'invite',
           handler: ({item}) => window.location.href = `${item.workspace.url}/invitations/new`
-        })
+        },
+        {
+          name: "Delete Workspace",
+          slug: 'Delete',
+          handler: () => this.$root.$emit(AppEvent.promptDeleteWorkspace, {
+            workspace: blob.workspace,
+            client: blob.client
+          })
+        }
+      )
       }
       return result
     },
@@ -85,10 +103,28 @@ components: { NewWorkspaceButton, WorkspaceAvatar, AccountStatusButton, ContentP
       return result.join(" ")
     },
     refresh() {
+      if (this.$store.getters.isCommunity) {
+        this.$root.$emit(AppEvent.upgradeModal, 'Cloud Workspaces')
+        return
+      }
       this.$store.dispatch('credentials/load')
     },
-    click(blob: { workspace: IWorkspace, client: CloudClient}) {
+    async click(blob: { workspace: IWorkspace, client: CloudClient, credentialId: number }) {
+      const isLocal = blob.workspace.id === LocalWorkspace.id
+      if (!isLocal && this.$store.getters.isCommunity) {
+        this.$root.$emit(AppEvent.upgradeModal, 'Cloud Workspaces')
+        return
+      }
+      if (!isLocal && this.$store.getters.isLifetime) {
+        this.$root.$emit(AppEvent.cloudWorkspacesBlocked)
+        return
+      }
+      await this.$util.send('workspace/setActive', { wId: blob.workspace.id, credentialId: blob.credentialId });
       this.$store.commit('workspaceId', blob.workspace.id)
+      this.$store.dispatch('settings/save', {
+        key: "lastUsedWorkspace",
+        value: blob.workspace.id.toString(),
+      })
     }
   },
   mounted() {

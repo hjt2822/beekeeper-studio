@@ -13,6 +13,7 @@ export default {
     // TODO (@day): this should be queried from the process based on the id that's received in the prop
     return {
       percentComplete: 0,
+      countExported: 0,
       exportName: null,
       notification: new Noty({
         // NOTE (@day): not sure this actually works lol
@@ -34,9 +35,9 @@ export default {
       // this is a hack to get the countExported to update
       const countExported = this.countExported;
       const percentComplete = this.percentComplete;
-      return percentComplete
+      return percentComplete && percentComplete >= 0
         ? `(${percentComplete}%) Exporting table '${this.exportName}'`
-        : `(${countExported} rows) Exporting query '${this.exportName}'`
+        : `(${countExported ?? "0"} rows) Exporting query '${this.exportName}'`// Fallback to "0" if countExported is undefined
     },
   },
   methods: {
@@ -59,6 +60,11 @@ export default {
     }
   },
   watch: {
+    percentComplete() {
+      if(this.percentComplete === 100) {
+        setTimeout(()=> this.notification.close(), 2000);
+      }
+    },
     notificationText: {
       handler() {
         if (this.notification) {
@@ -70,7 +76,7 @@ export default {
   async mounted() {
     const status = await this.$util.send('export/status', { id: this.exportId });
     this.exportName = await this.$util.send('export/name', { id: this.exportId });
-    if (status === ExportStatus.Exporting ) {
+    if (status === ExportStatus.Exporting) {
       this.$util.addListener(`onExportProgress/${this.exportId}`, this.updateProgress.bind(this));
       this.notification.show();
     }

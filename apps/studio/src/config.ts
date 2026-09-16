@@ -1,5 +1,6 @@
 import { IPlatformInfo } from './common/IPlatformInfo';
 import { ConnectionTypes, keymapTypes } from './lib/db/types'
+import globals from '@/common/globals'
 
 let platformInfo: IPlatformInfo;
 let userDirectory: string;
@@ -16,8 +17,19 @@ function hasSshKeysPlug() {
   }
 }
 
+function applyDevPlatformOverrides(config: IPlatformInfo): IPlatformInfo {
+  if (!config.isDevelopment) return config
+  const simulated = localStorage.getItem('dev.simulatePlatform')
+  if (!simulated) return config
+  return {
+    ...config,
+    isSnap: simulated === 'snap' ? 'true' : '',
+    isFlatpak: simulated === 'flatpak',
+  }
+}
+
 export function buildConfig(platInfo: IPlatformInfo) {
-  platformInfo = platInfo;
+  platformInfo = applyDevPlatformOverrides(platInfo);
   userDirectory = platformInfo.userDirectory
   snapSshPlug = hasSshKeysPlug();
 
@@ -32,7 +44,7 @@ export function buildConfig(platInfo: IPlatformInfo) {
       connectionTypes: ConnectionTypes,
       keymapTypes: keymapTypes,
     },
-    maxResults: 50000
+    maxResults: globals.maxResults
   }
   
 }
@@ -47,5 +59,4 @@ export default {
     connectionTypes: ConnectionTypes,
     keymapTypes: keymapTypes
   },
-  maxResults: 50000,
 }

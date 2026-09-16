@@ -1,33 +1,94 @@
 import { IConnection } from "@/common/interfaces/IConnection";
 import { TransportFavoriteQuery } from "@/common/transport";
 import { TableOrView } from "@/lib/db/models";
-import FlexSearch from "flexsearch";
+import { escapeHtml } from "@/shared/lib/tabulator";
+import uFuzzy from "@leeoniya/ufuzzy";
 import { Module } from "vuex";
 import { State as RootState } from '../index'
 
-interface FlexWorker {
-  addAsync(id: any, item: string): Promise<void>
-  searchAsync(term: string): Promise<number[]>
-  removeAsync(id: any): Promise<void>
-}
-
-interface IndexItem {
+export interface IndexItem {
   title: string
   item: TransportFavoriteQuery | TableOrView | IConnection | string
   type: 'query' | 'table' | 'connection' | 'database'
+  id: string
+}
+
+export interface SearchResult extends IndexItem {
+  highlight: string
+}
+
+const uf = new uFuzzy({
+  intraMode: 0,
+  intraIns: Infinity,
+});
+
+export function searchItems(
+  items: IndexItem[],
+  searchTerm: string,
+  limit = 20
+): SearchResult[] {
+  const titles = items.map((item) => item.title);
+  const [idxs, info, order] = uf.search(titles, searchTerm, 0, Infinity);
+
+  if (!idxs || !order) {
+    return [];
+  }
+
+  const results: SearchResult[] = [];
+
+  for (let i = 0; i < order.length && results.length < limit; i++) {
+    const infoIdx = order[i];
+    const itemIdx = idxs[infoIdx];
+    const item = items[itemIdx];
+
+    const highlight = uFuzzy.highlight(
+      titles[info.idx[infoIdx]],
+      info.ranges[infoIdx],
+      (part, matched) =>
+        matched ? `<strong>${escapeHtml(part) ?? ""}</strong>` : escapeHtml(part) ?? ""
+    );
+
+    results.push({
+      ...item,
+      highlight,
+    });
+  }
+
+  return results;
 }
 
 interface State {
-  searchIndex: FlexWorker
+  searching: boolean
 }
 
 export const SearchModule: Module<State, RootState> = {
   namespaced: true,
-  state: () => ({
-    searchIndex: new FlexSearch.Worker({ tokenize: 'forward' })
-  }),
+  state: {
+    searching: false,
+  },
+  mutations: {
+    searching(state, searching: boolean) {
+      state.searching = searching;
+    },
+  },
+  actions: {
+    async search(context, q: string) {
+      if (!q) {
+        return;
+      }
+      context.commit('searching', true);
+      try {
+        await Promise.all([
+          context.dispatch('data/connections/search', q, { root: true }),
+          context.dispatch('data/queries/search', q, { root: true }),
+        ]);
+      } finally {
+        context.commit('searching', false);
+      }
+    },
+  },
   getters: {
-    database(_state: State, _getters, root: RootState): IndexItem[] {
+    database(_state, _getters, root: RootState): IndexItem[] {
       const tables: IndexItem[] = root.tables.map((t) => {
         const title = t.schema ? `${t.schema}.${t.name}` : t.name
         return { item: t, type: 'table', title, id: title }
@@ -40,7 +101,7 @@ export const SearchModule: Module<State, RootState> = {
       })
       const connectionFolders = root['data/connectionFolders']['items']
       const connections: IndexItem[] = root['data/connections']['items'].map((f) => {
-        const folder = connectionFolders.find((folder) => folder.id === f.queryFolderId)
+        const folder = connectionFolders.find((folder) => folder.id === f.connectionFolderId)
         const title = folder ? `${folder.name} > ${f.name}` : f.name
         return { item: f, type: 'connection', title: `connection: ${title}`, id: `connection-${f.id}`}
       })
@@ -50,7 +111,4 @@ export const SearchModule: Module<State, RootState> = {
       return [...tables, ...favorites, ...connections, ...databases]
     },
   },
-  mutations: {
-  },
-
 }

@@ -1,5 +1,6 @@
 import { AppEvent } from "../../common/AppEvent"
-import rawLog from 'electron-log/renderer'
+import rawLog from '@bksLogger'
+import { SmartLocalStorage } from '@/common/LocalStorage'
 
 const log = rawLog.scope("AppEventHandler")
 
@@ -12,12 +13,16 @@ export default class {
 
   registerCallbacks() {
     window.main.on(AppEvent.settingsChanged, this.settingsChanged.bind(this))
-    window.main.on(AppEvent.menuStyleChanged, this.menuStyle.bind(this))
     window.main.on(AppEvent.disconnect, this.disconnect.bind(this))
     window.main.on(AppEvent.beekeeperAdded, this.addBeekeeper.bind(this))
+    window.main.on(AppEvent.switchLicenseState, this.switchLicenseState.bind(this))
+    window.main.on(AppEvent.simulatePlatform, this.simulatePlatform.bind(this))
+    this.forward(AppEvent.disconnect)
     this.forward(AppEvent.closeTab)
     this.forward(AppEvent.newTab)
-    this.forward(AppEvent.toggleSidebar)
+    this.forward(AppEvent.newCustomTab)
+    this.forward(AppEvent.togglePrimarySidebar)
+    this.forward(AppEvent.toggleSecondarySidebar)
     this.forward(AppEvent.quickSearch)
     this.forward(AppEvent.enterLicense)
     this.forward(AppEvent.backupDatabase);
@@ -25,12 +30,19 @@ export default class {
     this.forward(AppEvent.exportTables);
     this.forward(AppEvent.upgradeModal)
     this.forward(AppEvent.promptSqlFilesImport)
+    this.forward(AppEvent.promptConnectionFilesImport)
+    this.forward(AppEvent.updatePin)
+    this.forward(AppEvent.settingsChanged)
+    this.forward(AppEvent.openPluginManager)
+    this.forward(AppEvent.openKeyboardShortcuts)
+    this.forward(AppEvent.pluginMenuClicked)
+    this.forward(AppEvent.pasteAsNewRows)
   }
 
   forward(event) {
-    const emit = () => {
+    const emit = (_e, ...args) => {
       log.debug("Received from electron, forwarding to app", event)
-      this.vueApp.$emit(event)
+      this.vueApp.$emit(event, ...args)
     }
     window.main.on(event, emit.bind(this))
   }
@@ -39,7 +51,16 @@ export default class {
     this.vueApp.$emit(AppEvent.closeTab)
   }
 
-  addBeekeeper() {
+  async addBeekeeper() {
+    const existing = await this.vueApp.$util.send('appdb/saved/findOneBy', { options: { defaultDatabase: platformInfo.appDbPath }});
+    if (!existing) {
+      const nu = {};
+      nu.connectionType = 'sqlite'
+      nu.defaultDatabase = platformInfo.appDbPath
+      nu.name = "Beekeeper's Database"
+      nu.labelColor = 'orange'
+      await this.vueApp.$util.send('appdb/saved/save', { obj: nu });
+    }
     this.vueApp.$noty.success("Beekeeper's Database has been added to your Saved Connections")
     this.vueApp.$store.dispatch('data/connections/load')
   }
@@ -52,7 +73,19 @@ export default class {
     this.vueApp.$store.dispatch("settings/initializeSettings")
   }
 
-  menuStyle() {
-    this.vueApp.$noty.success("Restart Beekeeper for the change to take effect")
+  simulatePlatform(_event, platform) {
+    if (platform === 'none') {
+      localStorage.removeItem('dev.simulatePlatform')
+    } else {
+      localStorage.setItem('dev.simulatePlatform', platform)
+    }
+    window.location.reload(true)
+  }
+
+  async switchLicenseState(_event, state) {
+    await this.vueApp.$util.send('dev/switchLicenseState', { state })
+    this.vueApp.$store.dispatch("toggleShowBeginTrialModal", true)
+    SmartLocalStorage.setBool('expiredLicenseEventsEmitted', false)
+    window.location.reload(true)
   }
 }

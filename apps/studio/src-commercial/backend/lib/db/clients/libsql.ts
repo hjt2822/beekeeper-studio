@@ -1,7 +1,7 @@
 import _ from "lodash";
-import rawLog from "electron-log";
+import rawLog from "@bksLogger";
 import { SqliteClient, SqliteResult } from "@/lib/db/clients/sqlite";
-import Client_Libsql from "@libsql/knex-libsql";
+import Client_Libsql from "@shared/lib/knex-libsql";
 import { BasicDatabaseClient } from "@/lib/db/clients/BasicDatabaseClient";
 import Database from "libsql";
 import { LibSQLCursor, LibSQLCursorOptions } from "./libsql/LibSQLCursor";
@@ -9,23 +9,18 @@ import { IDbConnectionDatabase } from "@/lib/db/types";
 import { SqliteCursor } from "@/lib/db/clients/sqlite/SqliteCursor";
 import { createSQLiteKnex } from "@/lib/db/clients/sqlite/utils";
 import { IDbConnectionServer } from "@/lib/db/backendTypes";
+import { NgQueryResult, BksField } from "@/lib/db/models";
+import { LibSQLBinaryTranscoder } from "@/lib/db/serialization/transcoders";
 
 const log = rawLog.scope("libsql");
 const knex = createSQLiteKnex(Client_Libsql);
 
-/**
- * FIXME: This class doesn't support returning query data as arrays so
- * "select 1 as a, 2 as a" will be returned as [{a:2}]. Two ways we can resolve
- * this:
- * 1. Fix this in libsql-js https://github.com/tursodatabase/libsql-js/issues/116
- * 2. Use @libsql/client instead of libsql-js, but this seems to require us
- *    to use node >= 18
- */
 export class LibSQLClient extends SqliteClient {
   private isRemote: boolean;
   /** Use this connection only when we need to sync to remote database */
   // @ts-expect-error not fully typed
   _rawConnection: Database.Database;
+  transcoders = [LibSQLBinaryTranscoder];
 
   constructor(server: IDbConnectionServer, database: IDbConnectionDatabase) {
     super(server, database);
@@ -76,10 +71,6 @@ export class LibSQLClient extends SqliteClient {
     }
   }
 
-  async versionString(): Promise<string> {
-    return this.version?.data[0]["version"] || "";
-  }
-
   async truncateElementSql(elementName: string): Promise<string> {
     // FIXME libsql doesn't expose `vacuum` yet. We'll need to run vacuum after
     // delete according to SqliteClient.
@@ -93,17 +84,22 @@ export class LibSQLClient extends SqliteClient {
     }
   }
 
+  async selectTop(table: string, offset: number, limit: number, orderBy: OrderBy[], filters: string | TableFilter[], schema?: string, selects?: string[]): Promise<TableResult> {
+    const query = await this.selectTopSql(table, offset, limit, orderBy, filters, schema, selects);
+    const result = await this.driverExecuteSingle(query);
+    const columns = await this.listTableColumns(table);
+    const fields: BksField[] = columns.map((column) => column.bksField);
+    const rows = await this.serializeQueryResult(result, fields);
+    return { result: rows, fields };
+  }
+
   protected async rawExecuteQuery(
     q: string,
     options: { connection?: Database.Database } = {}
   ): Promise<SqliteResult | SqliteResult[]> {
     const connection = options.connection || this._rawConnection;
     const ownOptions = { ...options, connection };
-    if (this.isRemote) {
-      // FIXME disable arrayMode for now as stmt.raw() doesn't work for remote connection
-      return super.rawExecuteQuery(q, { ...ownOptions, arrayMode: false });
-    }
-    return super.rawExecuteQuery(q, ownOptions);
+    return await super.rawExecuteQuery(q, ownOptions)
   }
 
   // @ts-expect-error not fully typed
@@ -116,15 +112,6 @@ export class LibSQLClient extends SqliteClient {
         ? Number(this.libsqlOptions.syncPeriod)
         : undefined,
     });
-  }
-
-  protected checkReader(arg0: any, arg1: any): boolean {
-    if (this.isRemote) {
-      // statement.reader will always return false in remote connection, which
-      // cause `rawExecuteQuery` to always return empty data.
-      return true;
-    }
-    return super.checkReader(arg0, arg1);
   }
 
   protected createCursor(

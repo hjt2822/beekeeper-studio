@@ -10,6 +10,13 @@ import dev2 from './dev-2'
 import dev3 from './dev-3'
 import dev4 from './dev-4'
 import dev5 from './dev-5'
+import dev6 from './dev-6'
+import dev7 from './dev-7'
+import dev8 from './dev-8'
+import dev9 from './dev-9'
+import dev10 from './dev-10'
+import dev11Greengage from './dev-11-greengage'
+import dev12 from './dev-12'
 import domains from './20200519'
 import encrypt from './20200917-encrypt-passwords'
 import sslFiles from './20201008-add-ssl-files'
@@ -41,11 +48,62 @@ import tokenCache from './20240430_add_token_cache'
 import minimalMode from './20240514_user_settings_minimal_mode'
 import libsqlOptions from './20240528_add_libsql_options'
 import nameTokenCache from './20240715_add_name_to_token_cache'
+import maxAllowedAppRelease from './20240920_add_max_allowed_app_release'
+import lastUsedWorkspace from './20240923_user_settings_default_workspace'
+import userSettingKeymap from './20241017_add_user_setting_keymap'
+import missingUserSettings from './20241017_add_missing_user_settings'
+import useBeta from './20241009_add_beta_toggle'
+import tabHistoryUpdates from './20241116_tab_history_updates'
+import deleteDuplicateConnections from './20241115_delete_duplicate_connections'
+import addNewUrlField from './20250128_add_new_url_field'
+import tabHistoryIndex from './20250211_add_tab_history_index'
+import fixOracleData from './20250225_oracle_default_connection_method'
+import queryExcerpts from './20250228_query_excerpts'
+import addInstallationId from './20250404_add_installation_id'
+import sqlAnywhereOptions from './20250414_add_anywhere_options'
+import disabledPluginAutoUpdates from './20250522_add_disabled_plugin_auto_updates'
+import preinstalledPlugins from "./20250523_add_preinstalled_plugins"
+import addContextToTabs from "./20250527_add_context_to_tabs"
+import addPluginSettings from "./20250529_add_plugin_settings"
+import addPrivacyModeSetting from "./20250618_add_privacy_mode_setting"
+import createUserPins from './20250604_create_user_pins'
+import createPluginData from './20250630_create_plugin_data'
+import createEncryptedPluginData from './20250630_create_encrypted_plugin_data'
+import createFormatterPresets from './20250831_create_formatter_presets'
+import populateFormatterPresets from './20250831_populate_formatter_presets'
+import surrealDbOptions from './20250702_add_surrealdb_options'
+import upgradeSqliteExtensions from './20250911_upgrade_sqlite_extensions'
+import addOnboardingNotyShown from "./20251008_add_onboarding_noty_shown_setting"
+import uniqueNameFormatterPresets from './20251013_unique_name_formatter_presets'
+import addUsedQueryId from './20250620_add_used_query_id'
+import addPluginIdGeneratedColumn from './20251003_add_plugin_id_generated_column'
+import addTabDropdownAIShellHintShownSetting from './20251003_add_tab_dropdown_ai_shell_hint_shown_setting'
+import addEditorFontSize from './20251021_add_editor_font_size'
+import fixMissingExcerpts from './20251222_fix_missing_excerpts'
+import addWindowMaximizedSetting from './20251021_add_window_maximized_setting'
+import addIamAuthOptions from './20250819_add_iamAuthOptions'
+import migrateRedshiftToIamOptions from './20250820_migrate_redshift_to_iam_options'
+import createConnectionFolders from './20260223_create_connection_folders'
+import createQueryFolders from './20260223_create_query_folders'
+import addPositionToItems from './20260227_add_position_to_items'
+import addBastionAuth from './20260324_add_bastion_auth'
+import addDynamodbOptions from './20260417_add_dynamodb_options'
+import addLicenseInvalidatedAt from './20260421_add_license_invalidated_at'
+import cleanupDuplicateLicenseKeys from './20260421_cleanup_duplicate_license_keys'
+import createTabulatorPersistence from './20260424_create_tabulator_persistence'
+import createQueryAudits from './20260526_create_query_audits'
+import clearLogFiles from './20260527_clear_log_files'
+import addSnowflakeOptions from './20260501_add_snowflake_options'
+import addWindowsAuthToConnections from './20260618_add_windows_auth_to_connections'
+import addSqlServerOptions from './20260626_add_sqlserver_options'
+import fixQueryAuditAppendOnlyTrigger from './20260914_fix_query_audit_append_only_trigger'
+
 import ultimate from './ultimate/index'
 
 import UserSettingsWindowPosition from './20240303_user_settings_window_position'
 
-import rawLog from "electron-log";
+import rawLog from "@bksLogger";
+import { SqlAnywhereChangeBuilder } from '@/shared/lib/sql/change_builder/SqlAnywhereChangeBuilder'
 
 
 const logger = rawLog.scope('migrations');
@@ -64,8 +122,38 @@ const realMigrations = [
   serverCerts, socketPath, connectionOptions, keepaliveInterval, redshiftOptions,
   createHiddenEntities, createHiddenSchemas, cassandraOptions, readOnlyMode, connectionPins, fixKeymapType, bigQueryOptions,
   firebirdConnection, exportPath, UserSettingsWindowPosition,
-  demoSetup, minimalMode, tokenCache, libsqlOptions, nameTokenCache,
-
+  demoSetup, minimalMode, tokenCache, libsqlOptions, nameTokenCache, lastUsedWorkspace,
+  maxAllowedAppRelease, userSettingKeymap, missingUserSettings,
+  useBeta,
+  deleteDuplicateConnections,
+  tabHistoryUpdates,
+  addNewUrlField,
+  tabHistoryIndex,
+  fixOracleData,
+  addInstallationId,
+  sqlAnywhereOptions,
+  queryExcerpts,
+  disabledPluginAutoUpdates, preinstalledPlugins, addContextToTabs, addPluginSettings, createUserPins, addPrivacyModeSetting,
+  createPluginData, createEncryptedPluginData,
+  surrealDbOptions, upgradeSqliteExtensions,
+  addUsedQueryId, addPluginIdGeneratedColumn, addTabDropdownAIShellHintShownSetting,
+  createFormatterPresets, populateFormatterPresets, uniqueNameFormatterPresets,
+  addWindowMaximizedSetting, fixMissingExcerpts,
+  addIamAuthOptions, migrateRedshiftToIamOptions, addEditorFontSize,
+  createConnectionFolders, createQueryFolders,
+  addPositionToItems,
+  addBastionAuth,
+  addOnboardingNotyShown,
+  addDynamodbOptions,
+  addLicenseInvalidatedAt,
+  cleanupDuplicateLicenseKeys,
+  createTabulatorPersistence,
+  createQueryAudits,
+  clearLogFiles,
+  addSnowflakeOptions,
+  addWindowsAuthToConnections,
+  addSqlServerOptions,
+  fixQueryAuditAppendOnlyTrigger
 ]
 
 // fixtures require the models
@@ -74,7 +162,8 @@ const fixtures = [
 ]
 
 const devMigrations = [
-  dev1, dev2, dev3, dev4, dev5,
+  dev1, dev2, dev3, dev4, dev5, dev6, dev7, dev8, dev9,
+  dev10, dev11Greengage, dev12
 ]
 
 const migrations = [...realMigrations, ...fixtures, ...devMigrations]
@@ -118,10 +207,10 @@ export default class {
     const runner = this.connection.connection.createQueryRunner()
     try {
       await runner.query(setupSQL)
-      for(let i = 0; i < migrations.length; i++) {
+      for (let i = 0; i < migrations.length; i++) {
         const migration = migrations[i]
         logger.debug(`Checking migration ${migration.name}`)
-        if(migration.env && migration.env !== this.env) {
+        if (migration.env && migration.env !== this.env) {
           // env defined, and does not match
           logger.debug(`Skipping ${migration.name} in ${this.env}, required ${migration.env} `)
           continue

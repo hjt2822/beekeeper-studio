@@ -1,29 +1,31 @@
 import * as bq from '@google-cloud/bigquery';
 import { TableKey } from "@shared/lib/dialects/models";
 import { ChangeBuilderBase } from "@shared/lib/sql/change_builder/ChangeBuilderBase";
-import { SupportedFeatures, FilterOptions, TableOrView, Routine, TableColumn, ExtendedTableColumn, TableTrigger, TableIndex, SchemaFilterOptions, CancelableQuery, NgQueryResult, DatabaseFilterOptions, TableChanges, TableProperties, PrimaryKeyColumn, OrderBy, TableFilter, TableResult, StreamResults, TableInsert, TableUpdate, TableDelete } from "../models";
+import { SupportedFeatures, FilterOptions, TableOrView, Routine, TableColumn, ExtendedTableColumn, TableTrigger, TableIndex, SchemaFilterOptions, CancelableQuery, NgQueryResult, DatabaseFilterOptions, TableChanges, TableProperties, PrimaryKeyColumn, OrderBy, TableFilter, TableResult, StreamResults, TableInsert, TableUpdate, TableDelete, BksField } from "../models";
 import { DatabaseElement, IDbConnectionDatabase } from "../types";
 import { BasicDatabaseClient, ExecutionContext, QueryLogOptions } from "./BasicDatabaseClient";
 import knexlib from 'knex';
-import Client from 'knex/lib/client';
+import Client from 'knex/lib/client.js';
 import { BigQueryClient as BigQueryKnexClient } from '@shared/lib/knex-bigquery';
 import { BigQueryChangeBuilder } from "@shared/lib/sql/change_builder/BigQueryChangeBuilder";
 import platformInfo from "@/common/platform_info";
-import rawLog from 'electron-log';
-import { applyChangesSql, buildDeleteQueries, buildInsertQuery, buildSelectQueriesFromUpdates, buildSelectTopQuery, buildUpdateQueries, escapeString } from './utils';
+import rawLog from '@bksLogger';
+import { buildDeleteQueries, buildInsertQuery, buildSelectQueriesFromUpdates, buildSelectTopQuery, buildUpdateQueries, escapeString } from './utils';
 import { createCancelablePromise } from '@/common/utils';
 import { errors } from '@/lib/errors';
 import { BigQueryCursor } from './bigquery/BigQueryCursor';
 import { BigQueryData } from '@shared/lib/dialects/bigquery';
 import { IDbConnectionServer } from '../backendTypes';
+import _ from 'lodash';
 const { wrapIdentifier } = BigQueryData;
 const log = rawLog.scope('bigquery')
-const logger = () => log
 
 interface BigQueryResult {
   data: any,
   rows: any[],
   rowCount: number
+  arrayMode: boolean
+  columns: any[]
 }
 
 const bigqueryContext = {
@@ -35,14 +37,34 @@ const bigqueryContext = {
   }
 }
 
-export class BigQueryClient extends BasicDatabaseClient<BigQueryResult> {
-  connectionBaseType = 'bigquery' as const;
+export function parseRowData(data: Record<string, any>[]): Record<string, any>[] {
+  // BigQuery can return nested objects with custom types in the results
+  // look for the value string property.
+  // https://github.com/googleapis/nodejs-bigquery/blob/71dbed2140893677f7af254f5a7713a7f50bae92/src/bigquery.ts#L2191
+  return data.map((row) => {
+    const parsedRow: Record<string, any> = {}
+    Object.keys(row).forEach((key) => {
+      let strValue = row[key]
+      if (strValue !== null && typeof strValue === 'object') {
+        if ('value' in strValue) {
+          strValue = row[key].value
+          // This is for numerics which are returned as a 'BIG'
+        } else if ('toFixed' in strValue) {
+          strValue = row[key].toFixed()
+        }
+      }
+      parsedRow[key] = strValue
+    })
+    return parsedRow
+  })
+}
 
+export class BigQueryClient extends BasicDatabaseClient<BigQueryResult> {
   server: IDbConnectionServer;
   database: IDbConnectionDatabase;
   client: bq.BigQuery;
   config: any = {};
-  
+
   constructor(server: IDbConnectionServer, database: IDbConnectionDatabase) {
     super(null, bigqueryContext, server, database);
   }
@@ -56,16 +78,18 @@ export class BigQueryClient extends BasicDatabaseClient<BigQueryResult> {
   }
 
   async supportedFeatures(): Promise<SupportedFeatures> {
-    return { 
-      customRoutines: false, 
-      comments: false, 
-      properties: true, 
-      partitions: false, 
+    return {
+      customRoutines: false,
+      comments: false,
+      properties: true,
+      partitions: false,
       editPartitions: false,
       backups: false,
       backDirFormat: false,
       restore: false,
       indexNullsNotDistinct: false,
+      transactions: true,
+      filterTypes: ['standard']
     };
   }
 
@@ -83,13 +107,13 @@ export class BigQueryClient extends BasicDatabaseClient<BigQueryResult> {
     // For testing purposes
     this.config.apiEndpoint = this.bigQueryEndpoint(this.server.config)
 
-    logger().debug("configDatabase config: ", this.config)
+    log.debug("configDatabase config: ", this.config)
 
-    
+
     this.knex = knexlib({
-          client: BigQueryKnexClient as Client,
-          connection: { ...this.config }
-        });
+      client: BigQueryKnexClient as Client,
+      connection: { ...this.config }
+    });
 
 
     this.client = new bq.BigQuery(this.config);
@@ -101,11 +125,17 @@ export class BigQueryClient extends BasicDatabaseClient<BigQueryResult> {
 
   async listTables(_filter?: FilterOptions): Promise<TableOrView[]> {
     // Lists all tables in the dataset
+    if (!this.db) {
+      return [];
+    }
     return await this.listTablesOrViews(this.db, 'TABLE');
   }
 
   async listViews(_filter?: FilterOptions): Promise<TableOrView[]> {
     // Lists all views in the dataset
+    if (!this.db) {
+      return [];
+    }
     return await this.listTablesOrViews(this.db, 'VIEW');
   }
 
@@ -120,7 +150,11 @@ export class BigQueryClient extends BasicDatabaseClient<BigQueryResult> {
   async listTableColumns(table?: string, _schema?: string): Promise<ExtendedTableColumn[]> {
     // Lists all columns in a table
     const [metadata] = await this.client.dataset(this.db).table(table).getMetadata()
-    const data = metadata.schema.fields.map((field) => ({ columnName: field.name, dataType: field.type }))
+    const data = metadata.schema.fields.map((field) => ({
+      columnName: field.name,
+      dataType: field.type,
+      bksField: this.parseTableColumn(field),
+    }))
     return data
   }
 
@@ -140,7 +174,8 @@ export class BigQueryClient extends BasicDatabaseClient<BigQueryResult> {
     return [];
   }
 
-  async getTableKeys(table: string, _schema?: string): Promise<TableKey[]> {
+  async getOutgoingKeys(table: string, _schema?: string): Promise<TableKey[]> {
+    // Query for foreign keys FROM this table (referencing other tables)
     const sql = `
       SELECT
         NULL as from_schema,
@@ -176,12 +211,55 @@ export class BigQueryClient extends BasicDatabaseClient<BigQueryResult> {
       fromColumn: row.from_column,
       constraintName: row.constraint_name,
       onUpdate: row.update_rule,
-      onDelete: row.delete_rule
+      onDelete: row.delete_rule,
+      isComposite: false
     }));
-  }  
+  }
+
+  async getIncomingKeys(table: string, _schema?: string): Promise<TableKey[]> {
+    // Query for foreign keys TO this table (other tables referencing this table)
+    const sql = `
+      SELECT
+        NULL as from_schema,
+        f.table_name as from_table,
+        f.column_name as from_column,
+        NULL as to_schema,
+        t.table_name as to_table,
+        t.column_name as to_column,
+        f.constraint_name,
+        NULL as update_rule,
+        NULL as delete_rule
+      FROM
+        ${this.wrapIdentifier(this.db)}.INFORMATION_SCHEMA.KEY_COLUMN_USAGE as f
+      JOIN ${this.wrapIdentifier(this.db)}.INFORMATION_SCHEMA.CONSTRAINT_COLUMN_USAGE as t
+      ON f.constraint_name = t.constraint_name
+      JOIN ${this.wrapIdentifier(this.db)}.INFORMATION_SCHEMA.TABLE_CONSTRAINTS as con
+      ON f.constraint_catalog = con.constraint_catalog
+      AND f.constraint_schema = con.constraint_schema
+      AND f.constraint_name = con.constraint_name
+      WHERE f.table_schema = '${escapeString(this.db)}'
+      AND t.table_name = '${escapeString(table)}'
+      AND con.constraint_type = 'FOREIGN KEY'
+    `;
+
+    const result = await this.driverExecuteSingle(sql);
+
+    return result.rows.map((row) => ({
+      toTable: row.to_table,
+      toSchema: row.to_schema,
+      toColumn: row.to_column,
+      fromTable: row.from_table,
+      fromSchema: row.from_schema,
+      fromColumn: row.from_column,
+      constraintName: row.constraint_name,
+      onUpdate: row.update_rule,
+      onDelete: row.delete_rule,
+      isComposite: false
+    }));
+  }
 
   async query(queryText: string, options: any = {}): Promise<CancelableQuery> {
-    logger().debug('bigQuery query: ' + queryText);
+    log.debug('bigQuery query: ' + queryText);
     let job = null;
     const cancelable = createCancelablePromise({
       ...errors.CANCELED_BY_USER,
@@ -195,16 +273,15 @@ export class BigQueryClient extends BasicDatabaseClient<BigQueryResult> {
         // Get a query job first
         const jobOptions = { query: queryText, ...options };
         [job] = await this.client.createQueryJob(jobOptions)
-        logger().debug("created job: ", job.id)
-        console.log('JOB METADATA: ', job.metadata)
+        log.debug("created job: ", job.id)
 
-        if (options.dryRun) {
+        if (options?.dryRun) {
           const metadata = job.metadata;
           return [this.parseDryRunMetadata(metadata)];
         }
 
         try {
-          logger().debug("wait for executeQuery job.id: ", job.id)
+          log.debug("wait for executeQuery job.id: ", job.id)
           const data = await Promise.race([
             cancelable.wait(),
             this.driverExecuteSingle(queryText, job),
@@ -221,7 +298,7 @@ export class BigQueryClient extends BasicDatabaseClient<BigQueryResult> {
         }
         try {
           const [jobCancelResponse] = await job.cancel()
-          logger().debug("query jobCancelResponse: ", jobCancelResponse)
+          log.debug("query jobCancelResponse: ", jobCancelResponse)
           cancelable.cancel()
         } finally {
           cancelable.discard()
@@ -235,7 +312,7 @@ export class BigQueryClient extends BasicDatabaseClient<BigQueryResult> {
     // if (queryText instanceof String) {
     //   queryText = { query: queries }
     // }
-    let job = options.job;
+    let job = options?.job;
     log.info("BIGQUERY, executing", queryText)
     if (!job) {
       [job] = await this.client.createQueryJob({query: queryText})
@@ -253,11 +330,7 @@ export class BigQueryClient extends BasicDatabaseClient<BigQueryResult> {
     return data;
   }
 
-  async applyChangesSql(changes: TableChanges): Promise<string> {
-    return applyChangesSql(changes, this.knex);
-  }
-
-  async applyChanges(changes: TableChanges): Promise<any[]> {
+  async executeApplyChanges(changes: TableChanges): Promise<any[]> {
     let results = [];
 
     try {
@@ -273,7 +346,7 @@ export class BigQueryClient extends BasicDatabaseClient<BigQueryResult> {
         await this.deleteRows(changes.deletes);
       }
     } catch (ex) {
-      logger().error("Query Exception: ", ex);
+      log.error("Query Exception: ", ex);
 
       throw ex;
     }
@@ -286,7 +359,7 @@ export class BigQueryClient extends BasicDatabaseClient<BigQueryResult> {
   }
 
   async getTableProperties(table: string, _schema?: string): Promise<TableProperties> {
-    logger().debug("getTableProperties: ", table)
+    log.debug("getTableProperties: ", table)
 
     const [
       length,
@@ -399,11 +472,12 @@ export class BigQueryClient extends BasicDatabaseClient<BigQueryResult> {
     const queriesResult = await this.driverExecuteMultiple(query, { countQuery, params });
     const data = queriesResult[0];
     const rowCount = Number(data.rowCount);
-    const fields = Object.keys(data.rows[0] || {});
+    const fields = this.parseQueryResultColumns(data);
+    const rows = await this.serializeQueryResult(data, fields);
 
     const result = {
       totalRows: rowCount,
-      result: data.rows,
+      result: rows,
       fields
     };
     return result;
@@ -432,12 +506,8 @@ export class BigQueryClient extends BasicDatabaseClient<BigQueryResult> {
 
   async queryStream(query: string, chunkSize: number): Promise<StreamResults> {
     const theCursor = new BigQueryCursor(this.client, query, [], chunkSize);
-    const { columns, totalRows } = await this.getColumnsAndTotalRows(query)
-    log.debug('results', theCursor);
 
     return {
-      totalRows,
-      columns,
       cursor: theCursor
     };
   }
@@ -482,11 +552,12 @@ export class BigQueryClient extends BasicDatabaseClient<BigQueryResult> {
     return [];
   }
 
-  async createDatabase(databaseName: string, _charset: string, _collation: string): Promise<void> {
+  async createDatabase(databaseName: string, _charset: string, _collation: string): Promise<string> {
     // Create a new dataset/database
     const options = {}
     const [dataset] = await this.client.createDataset(databaseName, options);
-    logger().debug(`Dataset ${dataset.id} created.`);
+    log.debug(`Dataset ${dataset.id} created.`);
+    return databaseName;
   }
 
   async createDatabaseSQL(): Promise<string> {
@@ -495,15 +566,23 @@ export class BigQueryClient extends BasicDatabaseClient<BigQueryResult> {
 
   protected async rawExecuteQuery(q: string, options: any): Promise<BigQueryResult | BigQueryResult[]> {
     log.info("BIGQUERY, executing", q);
-    let job = options?.job;
+    let job: bq.Job = options?.job;
     const queryArgs = {query: q, ...options };
     if (!job) {
       [job] = await this.client.createQueryJob(queryArgs);
-    } 
+    }
 
     // Wait for the query to finish
     const results = await job.getQueryResults();
-    return results.map((data) => this.parseRowQueryResult(data))
+    return results.map((data) => {
+      const parsed = this.parseRowQueryResult(data)
+      return {
+        ...parsed,
+        arrayMode: false,
+        data: parsed.rows,
+        columns: parsed.fields,
+      }
+    })
   }
 
   private bigQueryEndpoint(config: any) {
@@ -516,15 +595,15 @@ export class BigQueryClient extends BasicDatabaseClient<BigQueryResult> {
   private async listTablesOrViews(db: string, type: string) {
     // Lists all tables or views in the dataset
     const [tables] = await this.client.dataset(db).getTables();
-    let data = tables.map((table) => ({ name: table.id, entityType: table.metadata.type, metadata: table.metadata, table: table }));
-    data = data.filter((table) => table.metadata.type === type);
-    logger().debug(`listTablesOrViews for type:${type} data: `, data);
+    let data = tables.map((table) => ({ name: table.id, entityType: table.metadata.type }));
+    data = data.filter((table) => table.entityType === type);
+    log.debug(`listTablesOrViews for type:${type} data: `, data);
     return data;
   }
-  
+
   // wtf typescript
   // eslint-disable-next-line
-  // @ts-ignore 
+  // @ts-ignore
   private parseDryRunMetadata(metadata) {
     const queryStatistics = metadata.statistics.query;
     // bytes -> TiB * bq price per TiB processed
@@ -558,9 +637,9 @@ export class BigQueryClient extends BasicDatabaseClient<BigQueryResult> {
   private parseRowQueryResult(data) {
     // Fallback in case the identifier could not reconize the command
     const isSelect = Array.isArray(data)
-    const rows = this.parseRowData(data) || []
+    const rows = parseRowData(data) || []
     const fields = Object.keys(rows[0] || {}).map((name) => ({ name, id: name }))
-    logger().debug("parseRowQueryResult data length: ", data.length)
+    log.debug("parseRowQueryResult data length: ", data.length)
 
     return {
       command: isSelect ? 'SELECT' : 'UNKNOWN',
@@ -571,27 +650,11 @@ export class BigQueryClient extends BasicDatabaseClient<BigQueryResult> {
     }
   }
 
-  private parseRowData(data) {
-    // BigQuery can return nested objects with custom types in the results
-    // look for the value string property.
-    // https://github.com/googleapis/nodejs-bigquery/blob/71dbed2140893677f7af254f5a7713a7f50bae92/src/bigquery.ts#L2191
-    return data.map((row) => {
-      const parsedRow = {}
-      Object.keys(row).forEach((key) => {
-        let strValue = row[key]
-        if (strValue != null && (Object.prototype.hasOwnProperty.call(strValue, 'value'))) {
-          strValue = row[key].value
-        }
-        parsedRow[key] = strValue
-      })
-      return parsedRow
-    })
-  }
 
   private async insertRows(inserts: TableInsert[]) {
     for (const insert of inserts) {
       const columns = await this.listTableColumns(insert.table);
-      const command = buildInsertQuery(this.knex, insert, columns);
+      const command = buildInsertQuery(this.knex, insert, { columns });
       await this.driverExecuteSingle(command);
     }
 
@@ -614,5 +677,9 @@ export class BigQueryClient extends BasicDatabaseClient<BigQueryResult> {
     }
 
     return true;
+  }
+
+  parseTableColumn(column: any): BksField {
+    return { name: column.name, bksType: 'UNKNOWN' }
   }
 }

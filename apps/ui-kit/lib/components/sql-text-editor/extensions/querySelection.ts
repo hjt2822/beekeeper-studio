@@ -1,0 +1,238 @@
+import _ from "lodash";
+import { Extension, StateField, StateEffect } from "@codemirror/state";
+import { EditorView, Decoration, DecorationSet } from "@codemirror/view";
+import { Options } from "sql-query-identifier";
+import { IdentifyResult, ParamTypes } from "sql-query-identifier/lib/defines";
+import { safelyIdentify } from "@/utils";
+
+// Utility function from entity-list/sql_tools
+function isTextSelected(
+  textStart: number,
+  textEnd: number,
+  selectionStart: number,
+  selectionEnd: number
+) {
+  const cursorMin = Math.min(selectionStart, selectionEnd);
+  const cursorMax = Math.max(selectionStart, selectionEnd);
+  const queryMin = Math.min(textStart, textEnd);
+  const queryMax = Math.max(textStart, textEnd);
+  if (
+    (cursorMin >= queryMin && cursorMin <= queryMax) ||
+    (cursorMax > queryMin && cursorMax <= queryMax) ||
+    (cursorMin <= queryMin && cursorMax >= queryMax)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export interface QuerySelectionChangeParams {
+  queries: IdentifyResult[];
+  selectedQuery: IdentifyResult;
+  error: Error | null;
+}
+
+interface QuerySelectionState {
+  queries: IdentifyResult[];
+  selectedQueryIndex: number;
+  selectedQueryPosition: { from: number; to: number } | null;
+  decorations: DecorationSet;
+  error: Error | null;
+}
+
+// Effects for updating the state
+const setDialectEffect = StateEffect.define<Options["dialect"]>();
+const setParamTypesEffect = StateEffect.define<Options["paramTypes"]>();
+
+function getSelectedQueryPosition(
+  queries: IdentifyResult[],
+  selectedQueryIndex: number
+) {
+  const selectedQuery = queries[selectedQueryIndex];
+  if (!selectedQuery || !queries) {
+    return null;
+  }
+  const qi = selectedQueryIndex;
+  const previousQuery = qi === 0 ? null : queries[qi - 1];
+  // adding 1 to account for semicolon
+  const start = previousQuery ? previousQuery.end + 1 : 0;
+  const end = selectedQuery.end;
+
+  return {
+    from: start,
+    to: end + 1,
+  };
+}
+
+function getSelectedQueryIndex(
+  queries: IdentifyResult[],
+  cursorIndex: number,
+  cursorIndexAnchor: number
+) {
+  for (let i = 0; i < queries.length; i++) {
+    // Find a query in between anchor and head cursors
+    if (cursorIndex !== cursorIndexAnchor) {
+      const isSelected = isTextSelected(
+        queries[i].start,
+        queries[i].end,
+        cursorIndexAnchor,
+        cursorIndex
+      );
+      if (isSelected) return i;
+    }
+    // Otherwise, find a query that sits before the cursor
+    if (cursorIndex <= queries[i].end + 1) return i;
+  }
+  return -1;
+}
+
+function splitQueries(
+  queryText: string,
+  dialect: Options["dialect"],
+  paramTypes: ParamTypes
+): {
+  queries: IdentifyResult[];
+  error: Error | null;
+} {
+  if (_.isEmpty(queryText.trim())) {
+    return { queries: [], error: null };
+  }
+
+  return safelyIdentify(queryText, { dialect, paramTypes });
+}
+
+// Extension factory function
+export function querySelection(
+  dialect?: Options["dialect"],
+  paramTypes?: Options["paramTypes"],
+  onQuerySelectionChange?: (params: QuerySelectionChangeParams) => void
+): Extension {
+  // Seed the dialect/paramTypes state with the values supplied at construction so the
+  // very first identification uses them. Previously these defaulted to "generic"/null and
+  // were only corrected one transaction later (via the effects dispatched below), which meant
+  // the initial query split — and the onQuerySelectionChange callback it fires — ran without
+  // paramTypes, so parameters in a freshly loaded query went undetected until the next edit.
+  const dialectState = StateField.define<Options["dialect"]>({
+    create: () => dialect || "generic",
+    update: (value, tr) => {
+      for (const effect of tr.effects) {
+        if (effect.is(setDialectEffect)) {
+          return effect.value || "generic";
+        }
+      }
+      return value;
+    }
+  });
+
+  const paramTypeState = StateField.define<Options["paramTypes"]>({
+    create: () => paramTypes ?? null,
+    update: (value, tr) => {
+      for (const effect of tr.effects) {
+        if (effect.is(setParamTypesEffect)) {
+          return effect.value
+        }
+      }
+      return value;
+    }
+  });
+
+  // State field that manages query selection
+  const querySelectionState = StateField.define<QuerySelectionState>({
+    create: () => ({
+      queries: [],
+      selectedQueryIndex: -1,
+      selectedQueryPosition: null,
+      decorations: Decoration.none,
+      error: null,
+    }),
+
+    update: (state, tr) => {
+      const dialect = tr.state.field(dialectState);
+      const paramTypes = tr.state.field(paramTypeState);
+
+      // Get cursor positions
+      const cursor = tr.state.selection.main;
+      const cursorIndex = cursor.head;
+      const cursorIndexAnchor = cursor.anchor;
+
+      // Split queries
+      const { queries, error } = splitQueries(tr.state.doc.toString(), dialect, paramTypes);
+      const selectedQueryIndex = getSelectedQueryIndex(
+        queries,
+        cursorIndex,
+        cursorIndexAnchor
+      );
+      const selectedQueryPosition = getSelectedQueryPosition(
+        queries,
+        selectedQueryIndex
+      );
+
+      // Check if anything changed
+      if (
+        _.isEqual(queries, state.queries) &&
+        _.isEqual(selectedQueryIndex, state.selectedQueryIndex) &&
+        _.isEqual(selectedQueryPosition, state.selectedQueryPosition)
+      ) {
+        return state;
+      }
+
+      // Create decorations for highlighting
+      let decorations = Decoration.none;
+      if (queries && queries.length >= 2 && selectedQueryPosition) {
+        const mark = Decoration.mark({
+          class: "cm-query-highlight",
+        });
+        decorations = Decoration.set([
+          mark.range(selectedQueryPosition.from, selectedQueryPosition.to)
+        ]);
+      }
+
+      return {
+        queries,
+        selectedQueryIndex,
+        selectedQueryPosition,
+        decorations,
+        error,
+      };
+    },
+
+    provide: f => EditorView.decorations.from(f, state => state.decorations)
+  });
+
+  return [
+    dialectState,
+    paramTypeState,
+    querySelectionState,
+    EditorView.updateListener.of((update) => {
+      if (update.docChanged || update.selectionSet) {
+        // Call the callback if query selection changed
+        const currentState = update.state.field(querySelectionState);
+        const prevState = update.startState.field(querySelectionState);
+        if (
+          onQuerySelectionChange &&
+          currentState !== prevState &&
+          currentState.queries[currentState.selectedQueryIndex]
+        ) {
+          onQuerySelectionChange({
+            queries: currentState.queries,
+            selectedQuery: currentState.queries[currentState.selectedQueryIndex],
+            error: currentState.error,
+          });
+        }
+
+        // Trigger state update by dispatching effects
+        const effects = [];
+        if (update.view.state.field(dialectState) !== dialect) {
+          effects.push(setDialectEffect.of(dialect));
+        }
+        if (update.view.state.field(paramTypeState) !== paramTypes) {
+          effects.push(setParamTypesEffect.of(paramTypes));
+        }
+
+        if (effects.length > 0) {
+          update.view.dispatch({ effects });
+        }
+      }
+    }),
+  ];
+}

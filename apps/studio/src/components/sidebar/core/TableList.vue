@@ -1,6 +1,6 @@
 <template>
   <div
-    class="flex-col expand"
+    class="flex-col expand table-list-component"
     ref="wrapper"
   >
     <!-- Filter -->
@@ -21,6 +21,7 @@
               <i class="clear material-icons">cancel</i>
             </x-button>
             <x-button
+              v-if="this.dialect != 'mongodb'"
               :title="entitiesHidden ? 'Filter active' : 'No filters'"
               class="btn btn-fab btn-link action-item"
               :class="{active: entitiesHidden}"
@@ -122,15 +123,39 @@
           >
             <i class="material-icons">refresh</i>
           </button>
-          <button
-            @click.prevent="newTable"
-            title="New Table"
-            class="create-table"
-            :disabled="tablesLoading"
-            v-if="canCreateTable"
+
+          <x-button
+            v-if="!usedConfig?.readOnlyMode"
+            class="settings-btn"
+            menu
           >
             <i class="material-icons">add</i>
-          </button>
+            <i class="material-icons">arrow_drop_down</i>
+            <x-menu>
+              <x-menuitem
+                :disabled="tablesLoading || createDisabled"
+                @click.prevent="newTable"
+                :title="createDisabled ? `Creating tables is not supported for ${dialect}` : ''"
+              >
+                <x-label>
+                  {{ newTableOrCollection }}
+                </x-label>
+              </x-menuitem>
+              <x-menuitem
+                :disabled="tablesLoading || createDisabled"
+                @click.prevent="newTableFromFile"
+                :title="createDisabled ? `Creating tables is not supported for ${dialect}` : ''"
+              >
+                <x-label>
+                  {{ newTableOrCollection }} from File
+                  <i
+                    v-if="$store.getters.isCommunity"
+                    class="material-icons menu-icon"
+                  >stars</i>
+                </x-label>
+              </x-menuitem>
+            </x-menu>
+          </x-button>
         </div>
       </div>
 
@@ -170,6 +195,7 @@
   import { AppEvent } from '@/common/AppEvent'
   import VirtualTableList from './table_list/VirtualTableList.vue'
   import { TableOrView, Routine } from "@/lib/db/models";
+  import { matches } from '@/common/transport/TransportPinnedEntity'
 
   export default {
     mixins: [TableFilter, TableListContextMenus],
@@ -189,9 +215,24 @@
       }
     },
     computed: {
-      ...mapGetters(['dialectData']),
+      ...mapGetters(['filteredTables', 'filteredRoutines', 'dialectData', 'dialect']),
+      ...mapState({currentDatabase: 'database', 'usedConfig': 'usedConfig'}),
+      ...mapState(['selectedSidebarItem', 'tables', 'routines', 'database', 'tablesLoading', 'supportedFeatures', 'connectionType']),
+      ...mapGetters({
+          pinnedEntities: 'pins/pinnedEntities',
+          orderedPins: 'pins/orderedPins',
+          totalHiddenEntities: 'hideEntities/totalEntities',
+          hiddenEntities: 'hideEntities/databaseEntities',
+          hiddenSchemas: 'hideEntities/databaseSchemas'
+      }),
       createDisabled() {
         return !!this.dialectData.disabledFeatures.createTable
+      },
+      newTableOrCollection() {
+        // FIXME: shouldn't be doing dialect checks like this.
+        if (this.dialect === 'mongodb') return 'New Collection'
+
+        return 'New Table'
       },
       totalEntities() {
         return this.tables.length + this.routines.length - this.hiddenEntities.length
@@ -243,7 +284,7 @@
           this.$refs.tables
         ]
       },
-      async supportsRoutines() {
+      supportsRoutines() {
         return this.supportedFeatures.customRoutines
       },
       canCreateTable() {
@@ -256,18 +297,12 @@
         return [
           { event: AppEvent.togglePinTableList, handler: this.togglePinTableList },
         ]
-      },
-      ...mapState(['selectedSidebarItem', 'tables', 'routines', 'database', 'tablesLoading', 'supportedFeatures']),
-      ...mapGetters(['filteredTables', 'filteredRoutines', 'dialectData']),
-      ...mapGetters({
-          pinnedEntities: 'pins/pinnedEntities',
-          orderedPins: 'pins/orderedPins',
-          totalHiddenEntities: 'hideEntities/totalEntities',
-          hiddenEntities: 'hideEntities/databaseEntities',
-          hiddenSchemas: 'hideEntities/databaseSchemas',
-      }),
+      }
     },
     watch: {
+      currentDatabase(){
+        this.filterQuery = null
+      },
       loadedWithPins (loaded, oldloaded) {
         if (loaded && (!oldloaded)) {
           this.$nextTick(() => {
@@ -294,7 +329,7 @@
       },
       refreshPinnedColumns() {
         this.orderedPins.forEach((p) => {
-          const t = this.tables.find((table) => p.matches(table))
+          const t = this.tables.find((table) => matches(p, table))
           if (t) {
             this.$store.dispatch('updateTableColumns', t)
           }
@@ -315,6 +350,9 @@
       },
       newTable() {
         this.$root.$emit(AppEvent.createTable)
+      },
+      newTableFromFile() {
+        this.$root.$emit(AppEvent.createTableFromFile)
       },
       maybeUnselect(e) {
         if (this.selectedSidebarItem) {
@@ -338,7 +376,6 @@
       }
     },
     mounted() {
-      document.addEventListener('mousedown', this.maybeUnselect)
       const components = [this.$refs.pinned, this.$refs.tables]
       this.split = Split(components, {
         elementStyle: (_dimension, size) => ({
@@ -362,6 +399,11 @@
   .table-action-wrapper{
     display: flex;
     flex-direction: row;
+  }
+  .settings-btn {
+    width: auto;
+    padding: 0;
+    box-shadow: none;
   }
   p.no-entities {
     width: 100%;

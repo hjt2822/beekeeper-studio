@@ -10,7 +10,7 @@ import { CoreTab, EntityFilter } from './models'
 import { entityFilter } from '../lib/db/sql_tools'
 import { BeekeeperPlugin } from '../plugins/BeekeeperPlugin'
 
-import RawLog from 'electron-log/renderer'
+import RawLog from '@bksLogger'
 import { Dialect, DialectTitles, dialectFor } from '@shared/lib/dialects/models'
 import { PinModule } from './modules/PinModule'
 import { getDialectData } from '@shared/lib/dialects'
@@ -32,6 +32,15 @@ import MultiTableExportStoreModule from './modules/exports/MultiTableExportModul
 import ImportStoreModule from './modules/imports/ImportStoreModule'
 import { BackupModule } from './modules/backup/BackupModule'
 import { CloudClient } from '@/lib/cloud/CloudClient'
+import { ConnectionTypes, SnowflakeAuthType, SurrealAuthType } from '@/lib/db/types'
+import { SidebarModule, State as SidebarState } from './modules/SidebarModule'
+import { isVersionLessThanOrEqual, parseVersion } from '@/common/version'
+import { PopupMenuModule } from './modules/PopupMenuModule'
+import { WebPluginManagerStatus } from '@/services/plugin'
+import { MenuBarModule } from './modules/MenuBarModule'
+import { PluginsModule, PluginsState } from './modules/plugins'
+import { VimStoreModule } from './modules/VimStoreModule'
+import { pluralize } from '@/vendor/pluralize'
 
 
 const log = RawLog.scope('store/index')
@@ -42,12 +51,49 @@ const tablesMatch = (t: TableOrView, t2: TableOrView) => {
     t2.entityType === t.entityType
 }
 
+function shouldPromptCockroachJwt(config: Nullable<IConnection>) {
+  return config?.connectionType === 'cockroachdb' &&
+    !!config?.options?.jwtAuthEnabled &&
+    !config?.password;
+}
+
+function shouldPromptSnowflakeMFA(config: Nullable<IConnection>) {
+  return config?.connectionType === 'snowflake' &&
+    config?.snowflakeOptions.authType === SnowflakeAuthType.MFACode;
+}
+
+async function resolveEphemeralValues(config: IConnection): Promise<IConnection | null> {
+  if (shouldPromptCockroachJwt(config)) {
+    const { token, cancelled } = await BeekeeperPlugin.promptJwtToken(
+      BeekeeperPlugin.buildConnectionName(config)
+    );
+
+    if (cancelled) return null;
+
+    const resolvedConfig = _.cloneDeep(config);
+
+    resolvedConfig.password = token;
+    return resolvedConfig;
+  } else if (shouldPromptSnowflakeMFA(config)) {
+    const { passcode, cancelled } = await BeekeeperPlugin.promptSnowflakeMFAPasscode();
+
+    if (cancelled) return null;
+
+    const resolvedConfig = _.cloneDeep(config);
+
+    resolvedConfig.snowflakeOptions.passcode = passcode;
+    return resolvedConfig;
+  }
+
+  return config;
+}
 
 export interface State {
   connection: ElectronUtilityConnectionClient,
   usedConfig: Nullable<IConnection>,
   server: Nullable<IDbConnectionPublicServer>,
   connected: boolean,
+  connecting: boolean,
   connectionType: Nullable<string>,
   supportedFeatures: Nullable<SupportedFeatures>,
   database: Nullable<string>,
@@ -68,7 +114,23 @@ export interface State {
   defaultSchema: string,
   versionString: string,
   connError: string
-  expandFKDetailsByDefault: boolean
+  expandFKDetailsByDefault: boolean,
+
+  // SurrealDB only
+  namespace: Nullable<string>,
+  namespaceList: string[],
+
+  pluginManagerStatus: WebPluginManagerStatus,
+
+  // Non-fatal ~/.ssh/config issues from the most recent connect/test, surfaced
+  // by the connection component as a warning toast.
+  sshConfigWarnings: string[],
+
+  /** Set by VueX module */
+  plugins?: PluginsState,
+
+  /** Set by VueX module. */
+  sidebar?: SidebarState
 }
 
 Vue.use(Vuex)
@@ -88,13 +150,20 @@ const store = new Vuex.Store<State>({
     pinnedConnections: PinConnectionModule,
     multiTableExports: MultiTableExportStoreModule,
     imports: ImportStoreModule,
-    backups: BackupModule
+    backups: BackupModule,
+    sidebar: SidebarModule,
+    popupMenu: PopupMenuModule,
+    menuBar: MenuBarModule,
+    plugins: PluginsModule,
+    vim: VimStoreModule,
   },
   state: {
     connection: new ElectronUtilityConnectionClient(),
     usedConfig: null,
     server: null,
     connected: false,
+    connecting: false,
+    sshConfigWarnings: [],
     connectionType: null,
     supportedFeatures: null,
     database: null,
@@ -122,11 +191,17 @@ const store = new Vuex.Store<State>({
     versionString: null,
     connError: null,
     expandFKDetailsByDefault: SmartLocalStorage.getBool('expandFKDetailsByDefault'),
+    namespace: null,
+    namespaceList: [],
+    pluginManagerStatus: "initializing",
   },
 
   getters: {
     defaultSchema(state) {
       return state.defaultSchema;
+    },
+    friendlyConnectionType(state) {
+      return ConnectionTypes.find((ct) => ct.value == state.connectionType)?.name ?? "Default Connection"
     },
     workspace(state, getters): IWorkspace {
       if (state.workspaceId === LocalWorkspace.id) return LocalWorkspace
@@ -212,7 +287,7 @@ const store = new Vuex.Store<State>({
       return getters.schemas.length > 1
     },
     connectionColor(state) {
-      return state.usedConfig ? state.usedConfig.labelColor : 'default'
+      return state.usedConfig?.labelColor ?? 'default'
     },
     schemas(state) {
       if (state.tables.find((t) => !!t.schema)) {
@@ -227,8 +302,38 @@ const store = new Vuex.Store<State>({
     versionString(state) {
       return state.server.versionString();
     },
+    isCommunity(_state, _getters, _rootState, rootGetters) {
+      return rootGetters['licenses/isCommunity']
+    },
+    isUltimate(_state, _getters, _rootState, rootGetters) {
+      return rootGetters['licenses/isUltimate']
+    },
+    isTrial(_state, _getters, _rootState, rootGetters) {
+      return rootGetters['licenses/isTrial']
+    },
+    isLifetime(_state, _getters, _rootState, rootGetters) {
+      return rootGetters['licenses/isLifetime']
+    },
+    canAccessCloudWorkspaces(_state, _getters, _rootState, rootGetters) {
+      return rootGetters['licenses/canAccessCloudWorkspaces']
+    },
     expandFKDetailsByDefault(state) {
       return state.expandFKDetailsByDefault
+    },
+    onboardingNotyShown(_state, getters) {
+      return !_.isEmpty(getters["settings/settings"]["onboardingNotyShown"]?.value);
+    },
+    aiShellHintShown(_state, getters) {
+      return !_.isEmpty(getters["settings/settings"]["tabDropdownAIShellHintShown"]?.value);
+    },
+    aiShellAvailable(_state, getters) {
+      return getters["tabs/newTabDropdownItems"].some(
+        ({ config }) => config.pluginId === "bks-ai-shell"
+      );
+    },
+    erDiagramAvailable(_state, getters) {
+      const items = getters["popupMenu/getExtraPopupMenu"]("structure.statusbar");
+      return items.some((item) => item.slug === "bks-er-diagram-showOneTable");
     }
   },
   mutations: {
@@ -236,7 +341,7 @@ const store = new Vuex.Store<State>({
       state.storeInitialized = b
     },
     workspaceId(state, id: number) {
-      state.workspaceId = id
+      state.workspaceId = Number(id)
     },
     selectSidebarItem(state, item: string) {
       state.selectedSidebarItem = item
@@ -268,9 +373,10 @@ const store = new Vuex.Store<State>({
     setUsername(state, name) {
       state.username = name
     },
-    newConnection(state, config: IConnection) {
+    newConnection(state, config: Nullable<IConnection>) {
       state.usedConfig = config
-      state.database = config.defaultDatabase
+      state.database = config?.defaultDatabase
+      state.namespace = config?.surrealDbOptions?.namespace;
     },
     // this shouldn't be used at all
     clearConnection(state) {
@@ -279,7 +385,12 @@ const store = new Vuex.Store<State>({
       state.supportedFeatures = null
       state.server = null
       state.database = null
+      state.connectionType = null
+      state.defaultSchema = null
+      state.versionString = null
       state.databaseList = []
+      state.namespace = null
+      state.namespaceList = []
       state.tables = []
       state.routines = []
       state.entityFilter = {
@@ -290,12 +401,17 @@ const store = new Vuex.Store<State>({
         showPartitions: false
       }
     },
-    updateConnection(state, {database}) {
-      // state.connection = connection
+    database(state, database: string) {
       state.database = database
     },
     databaseList(state, dbs: string[]) {
       state.databaseList = dbs
+    },
+    namespaceList(state, nss: string[]) {
+      state.namespaceList = nss;
+    },
+    namespace(state, namespace: string) {
+      state.namespace = namespace;
     },
     unloadTables(state) {
       state.tables = []
@@ -352,6 +468,9 @@ const store = new Vuex.Store<State>({
     connected(state, connected: boolean) {
       state.connected = connected;
     },
+    connecting(state, connecting: boolean) {
+      state.connecting = connecting;
+    },
     supportedFeatures(state, features: SupportedFeatures) {
       state.supportedFeatures = features;
     },
@@ -364,10 +483,23 @@ const store = new Vuex.Store<State>({
     expandFKDetailsByDefault(state, value: boolean) {
       state.expandFKDetailsByDefault = value
     },
+    webPluginManagerStatus(state, status: WebPluginManagerStatus) {
+      state.pluginManagerStatus = status
+    },
+    sshConfigWarnings(state, warnings: string[]) {
+      state.sshConfigWarnings = warnings || []
+    },
   },
   actions: {
     async test(context, config: IConnection) {
-      await Vue.prototype.$util.send('conn/test', { config, osUser: context.state.username });
+      context.commit('sshConfigWarnings', []);
+      const resolvedConfig = await resolveEphemeralValues(config);
+      if (!resolvedConfig) return false;
+
+      // ~/.ssh/config warnings go to the store; the component watches and surfaces them.
+      const warnings = await Vue.prototype.$util.send('conn/test', { config: resolvedConfig, osUser: context.state.username });
+      context.commit('sshConfigWarnings', warnings);
+      return true;
     },
 
     async fetchUsername(context) {
@@ -375,16 +507,23 @@ const store = new Vuex.Store<State>({
       context.commit('setUsername', name)
     },
 
-    async openUrl(context, url: string) {
+    async openUrl(context, { url, auth }: { url: string, auth?: { input: string; mode: 'pin'; }}) {
       const conn = await Vue.prototype.$util.send('appdb/saved/parseUrl', { url });
-      await context.dispatch('connect', conn)
+      await context.dispatch('connect', { config: conn, auth })
     },
 
-    updateWindowTitle(context, config: Nullable<IConnection>) {
-      const title = config
+    updateWindowTitle(context) {
+      const config = context.state.usedConfig
+      let title = config
         ? `${BeekeeperPlugin.buildConnectionName(config)} - Beekeeper Studio`
         : 'Beekeeper Studio'
-
+      if (context.getters.isTrial && context.getters.isUltimate) {
+        const days = context.rootGetters['licenses/licenseDaysLeft']
+        title += ` - Free Trial (${pluralize('day', days, true)} left)`
+      }
+      if (context.getters.isCommunity) {
+        title += ' - Free Version'
+      }
       context.commit('updateWindowTitle', title)
       window.main.setWindowTitle(title);
     },
@@ -395,62 +534,187 @@ const store = new Vuex.Store<State>({
       if(isConnected) context.dispatch('updateWindowTitle', config)
     },
 
-    async connect(context, config: IConnection) {
-      if (context.state.username) {
-        // HACK (@day): this is just to fix some issues with the typeorm models moving to the utility process.
-        // this should be removed once the appdb handlers have been merged.
-        const tConfig = JSON.parse(JSON.stringify(config));
-        tConfig.port = config.port;
-        tConfig.connectionType = config.connectionType;
+    async connect(context, { config, auth }: { config: IConnection, auth?: { input: string; mode: 'pin'; }}) {
+      // A second connect while one is pending would race it for the single
+      // utility-process connection slot: whichever attempt finishes last wins
+      // state, and a stale failure surfaces its error over the winner's session.
+      if (context.state.connecting) {
+        throw new Error('A connection attempt is already in progress');
+      }
+      context.commit('connecting', true);
+      try {
+        context.commit('sshConfigWarnings', []);
+        const resolvedConfig = await resolveEphemeralValues(config);
+        if (!resolvedConfig) return false;
 
-        await Vue.prototype.$util.send('conn/create', { config: tConfig, osUser: context.state.username })
-        const defaultSchema = await context.state.connection.defaultSchema();
-        const supportedFeatures = await context.state.connection.supportedFeatures();
-        const versionString = await context.state.connection.versionString();
-        context.commit('defaultSchema', defaultSchema);
-        context.commit('connectionType', config.connectionType);
-        context.commit('connected', true);
-        context.commit('supportedFeatures', supportedFeatures);
-        context.commit('versionString', versionString);
-        context.commit('newConnection', config)
-
-        await context.dispatch('updateDatabaseList')
-        await context.dispatch('updateTables')
-        await context.dispatch('updateRoutines')
-        context.dispatch('data/usedconnections/recordUsed', config)
-        context.dispatch('updateWindowTitle', config)
-
-        if (supportedFeatures.backups) {
-          const serverConfig = await Vue.prototype.$util.send('conn/getServerConfig');
-          context.dispatch('backups/setConnectionConfigs', { config, supportedFeatures, serverConfig });
+        if (!context.state.username) {
+          throw new Error("No username provided")
         }
 
-      } else {
-        throw "No username provided"
+        await Vue.prototype.$util.send('conn/create', { config: resolvedConfig, auth, osUser: context.state.username })
+
+        // The server connection exists from here on: any bootstrap failure
+        // below must tear it down and rethrow, so the caller stays on the
+        // connection screen with the error instead of landing in a
+        // half-connected core interface.
+        try {
+          const defaultSchema = await context.state.connection.defaultSchema();
+          const supportedFeatures = await context.state.connection.supportedFeatures();
+          const versionString = await context.state.connection.versionString();
+
+          const serverConfig = await Vue.prototype.$util.send('conn/getServerConfig');
+          context.commit('sshConfigWarnings', serverConfig?.sshConfigWarnings || []);
+
+          // conn/create recorded the use; pick up the new/updated recent row
+          await context.dispatch('data/usedconnections/load')
+
+          context.commit('defaultSchema', defaultSchema);
+          context.commit('connectionType', config.connectionType);
+          context.commit('supportedFeatures', supportedFeatures);
+          context.commit('versionString', versionString);
+          // `usedConfig` is what the connected UI is keyed on (the connection
+          // button, the window title, tab history), so it is committed before
+          // `connected` - otherwise the core interface renders with no
+          // connection. Watchers on it must be `immediate` for the same reason.
+          context.commit('newConnection', resolvedConfig)
+
+          // `connected` is the switch between the connection screen and the
+          // core interface. Entity loading below deliberately runs after it so
+          // the sidebar can show its own "Loading tables..." state instead of
+          // stalling on the connection screen; a failure there still rolls the
+          // whole connection back.
+          window.main.enableConnectionMenuItems();
+          context.commit('connected', true);
+          context.dispatch('updateWindowTitle', resolvedConfig)
+
+          if (supportedFeatures.backups) {
+            context.dispatch('backups/setConnectionConfigs', { config: resolvedConfig, supportedFeatures, serverConfig });
+          }
+
+          if (resolvedConfig.connectionType === 'surrealdb' &&
+            resolvedConfig.surrealDbOptions?.authType === SurrealAuthType.Root) {
+            await context.dispatch('updateNamespaceList');
+          }
+          await context.dispatch('updateDatabaseList')
+          await context.dispatch('updateTables')
+          await context.dispatch('updateRoutines')
+        } catch (ex) {
+          log.error("Connection failed after the connection was opened, disconnecting", ex)
+          await context.dispatch('rollbackConnection')
+          throw ex
+        }
+
+        // Post-connect housekeeping - failures here shouldn't kick the user
+        // back out of an otherwise working connection.
+        try {
+          await Vue.prototype.$util.send('appdb/tabhistory/clearDeletedTabs', { workspaceId: context.state.usedConfig.workspaceId, connectionId: context.state.usedConfig.id })
+          await context.dispatch('checkVersion');
+        } catch (ex) {
+          log.error('post-connect housekeeping failed', ex)
+        }
+        return true;
+      } finally {
+        context.commit('connecting', false);
+      }
+    },
+    /**
+     * Return the app to a clean disconnected state after `connect` fails partway
+     * through. Closes the backend connection that `conn/create` already opened and
+     * undoes any commits made, so the user lands back on the connection screen
+     * instead of an empty core interface.
+     */
+    async rollbackConnection(context) {
+      try {
+        await Vue.prototype.$util.send('conn/disconnect');
+      } catch (ex) {
+        log.error("Error disconnecting a failed connection", ex)
+      }
+
+      try {
+        await Vue.prototype.$util.send('conn/clearConnection');
+      } catch (ex) {
+        log.error("Error clearing a failed connection", ex)
+      }
+
+      window.main.disableConnectionMenuItems();
+      context.commit('clearConnection')
+      context.commit('newConnection', null)
+      await context.dispatch('updateWindowTitle')
+    },
+    async checkVersion(context) {
+      const data = context.getters['dialectData'];
+      if (data?.versionWarnings && data?.versionWarnings.length > 0) {
+        const version = context.state['versionString'];
+        const parsed = parseVersion(version);
+
+        for (const warning of data.versionWarnings) {
+          if (!isVersionLessThanOrEqual(warning.minVersion, parsed)) {
+            Vue.prototype.$noty.warning(warning.warning, { timeout: 5000 })
+          }
+        }
       }
     },
     async reconnect(context) {
       if (context.state.connection) {
+        if (shouldPromptCockroachJwt(context.state.usedConfig)) {
+          return await context.dispatch('connect', { config: context.state.usedConfig });
+        }
+
         await context.state.connection.connect();
+        return true;
       }
+      return false;
     },
     async disconnect(context) {
-      const server = context.state.server
-      server?.disconnect()
+      if (context.state.connection) {
+        try {
+          await context.state.connection.disconnect();
+        } catch (e) {
+          log.error('Error disconnecting from the driver', e)
+        }
+      }
+
+      try {
+        await Vue.prototype.$util.send('conn/clearConnection')
+      } catch (e) {
+        log.error('Error clearing the utility-side connection state', e)
+      }
+
+      window.main.disableConnectionMenuItems();
+
       context.commit('clearConnection')
-      context.dispatch('updateWindowTitle', null)
-      context.dispatch('refreshConnections')
+      context.commit('newConnection', null)
+      await context.dispatch('updateWindowTitle')
+      await context.dispatch('refreshConnections')
     },
     async syncDatabase(context) {
       await context.state.connection.syncDatabase();
     },
     async changeDatabase(context, newDatabase: string) {
       log.info("Pool changing database to", newDatabase)
-      await Vue.prototype.$util.send('conn/changeDatabase', { newDatabase });
-      context.commit('updateConnection', {database: newDatabase})
+
+      let databaseForServer = newDatabase;
+      if (context.state.connectionType === 'surrealdb') {
+        databaseForServer = `${context.state.namespace}::${newDatabase || ''}`;
+      }
+
+      await Vue.prototype.$util.send('conn/changeDatabase', { newDatabase: databaseForServer });
+      context.commit('database', newDatabase)
       await context.dispatch('updateTables')
       await context.dispatch('updateDatabaseList')
       await context.dispatch('updateRoutines')
+    },
+    async changeNamespace(context, newNamespace: string) {
+      if (newNamespace === context.state.namespace) return;
+      log.info("Pool changing namespace to ", newNamespace);
+
+      const dbs = await context.state.connection.listDatabases({ namespace: newNamespace });
+      log.info("DatabaseList:::", dbs)
+      context.commit('databaseList', dbs);
+      context.commit('namespace', newNamespace);
+      context.commit('database', null);
+      context.commit('tables', []);
+      context.commit('routines', []);
     },
 
     async updateTableColumns(context, table: TableOrView) {
@@ -475,7 +739,14 @@ const store = new Vuex.Store<State>({
     },
     async updateDatabaseList(context) {
       const databaseList = await context.state.connection.listDatabases();
+      log.info("databaseList: ", databaseList)
       context.commit('databaseList', databaseList)
+    },
+    async updateNamespaceList(context) {
+      // Just reuse listSchemas cause we don't use it and it's kinda comparable, may be a not great idea
+      const namespaceList = await context.state.connection.listSchemas();
+      log.info("namespaceList: ", namespaceList);
+      context.commit("namespaceList", namespaceList);
     },
     async updateTables(context) {
       // FIXME: We should only load tables for the active/default schema
@@ -547,19 +818,89 @@ const store = new Vuex.Store<State>({
     async tabActive(context, value: CoreTab) {
       context.commit('tabActive', value)
     },
+    async initializeConnectionTree(context) {
+      await Promise.all([
+        context.dispatch('data/connectionFolders/refresh', []),
+        context.dispatch('data/connections/refresh', []),
+      ]);
+
+      const folderIds = context.state['data/connectionFolders'].items
+        .filter((folder) => folder.default)
+        .map((folder) => folder.id)
+      // the default folders start out expanded
+      context.commit('sidebar/connections/expandedIds', folderIds)
+
+      await Promise.all([
+        context.dispatch('data/connectionFolders/loadByParentIds', folderIds),
+        context.dispatch('data/connections/loadByParentIds', folderIds),
+      ])
+    },
+    async initializeQueryTree(context) {
+      await Promise.all([
+        context.dispatch('data/queryFolders/refresh', []),
+        context.dispatch('data/queries/refresh', []),
+      ]);
+
+      const expandedFolderIds = context.state['data/queryFolders'].items
+        .filter((folder) => folder.default)
+        .map((folder) => folder.id)
+      // the default folders start out expanded
+      context.commit('sidebar/queries/expandedIds', expandedFolderIds)
+
+      await Promise.all([
+        context.dispatch('data/queryFolders/loadByParentIds', expandedFolderIds),
+        context.dispatch('data/queries/loadByParentIds', expandedFolderIds),
+      ])
+    },
     async refreshConnections(context) {
-      context.dispatch('data/connectionFolders/load')
-      context.dispatch('data/connections/load')
+      const expandedIds = context.state.sidebar.connections.expandedIds
+      await Promise.all([
+        context.dispatch('data/connectionFolders/refresh', expandedIds),
+        context.dispatch('data/connections/refresh', expandedIds),
+      ])
+
       await context.dispatch('pinnedConnections/loadPins');
       await context.dispatch('pinnedConnections/reorder');
     },
-    async toggleExpandFKDetailsByDefault(context, value?: boolean) {
+    async refreshQueries(context) {
+      const expandedIds = context.state.sidebar.queries.expandedIds
+      await Promise.all([
+        context.dispatch('data/queryFolders/refresh', expandedIds),
+        context.dispatch('data/queries/refresh', expandedIds),
+      ])
+    },
+    async initRootStates(context) {
+      await context.dispatch('fetchUsername')
+      await context.dispatch('licenses/init')
+      await context.dispatch('userEnums/init')
+      await context.dispatch('updateWindowTitle')
+    },
+    licenseEntered(context) {
+      context.dispatch('updateWindowTitle')
+    },
+    toggleFlag(context, { flag, value }: { flag: string, value?: boolean }) {
       if (typeof value === 'undefined') {
-        value = !context.state.expandFKDetailsByDefault
+        value = !context.state[flag]
       }
-      SmartLocalStorage.setBool('expandFKDetailsByDefault', value)
-      context.commit('expandFKDetailsByDefault', value)
-    }
+      SmartLocalStorage.setBool(flag, value)
+      context.commit(flag, value)
+      return value
+    },
+    toggleExpandFKDetailsByDefault(context, value?: boolean) {
+      context.dispatch('toggleFlag', { flag: 'expandFKDetailsByDefault', value })
+    },
+    setOnboardingNotyShown(context) {
+      context.dispatch('settings/save', {
+        key: 'onboardingNotyShown',
+        value: new Date(),
+      });
+    },
+    setAiShellHintShown(context) {
+      context.dispatch("settings/save", {
+        key: "tabDropdownAIShellHintShown",
+        value: new Date(),
+      });
+    },
   },
   plugins: []
 })

@@ -1,19 +1,14 @@
 'use strict'
 import * as fs from 'fs'
 import path from 'path'
-import { app, protocol } from 'electron'
-import log from 'electron-log/main'
+import { app, protocol, ipcMain, clipboard, ClipboardItem } from 'electron'
 import * as electron from 'electron'
-import { ipcMain } from 'electron'
 import _ from 'lodash'
+import log from '@bksLogger'
 
 // eslint-disable-next-line
 require('@electron/remote/main').initialize()
-log.initialize();
-log.transports.file.level = "info"
-log.catchErrors({ showDialog: false})
 log.info("initializing background")
-
 
 import MenuHandler from '@/background/NativeMenuBuilder'
 import { IGroupedUserSettings, UserSetting } from '@/common/appdb/models/user_setting'
@@ -21,6 +16,7 @@ import Connection from '@/common/appdb/Connection'
 import Migration from '@/migration/index'
 import { buildWindow, getActiveWindows, getCurrentWindow } from '@/background/WindowBuilder'
 import platformInfo from '@/common/platform_info'
+import bksConfig from '@/common/bksConfig'
 
 import { AppEvent } from '@/common/AppEvent'
 import { ProtocolBuilder } from '@/background/lib/electron/ProtocolBuilder';
@@ -28,6 +24,17 @@ import { uuidv4 } from '@/lib/uuid';
 import installExtension, { VUEJS_DEVTOOLS } from 'electron-devtools-installer';
 import { UtilProcMessage } from '@/types'
 import { manageUpdates } from '@/background/update_manager'
+import * as sms from 'source-map-support'
+import { initializeSecurity } from '@/backend/lib/security'
+import { initializeFileHelpers } from '@/backend/lib/FileHelpers'
+import { safeOpenExternal } from '@/background/lib/electron/safeOpenExternal'
+
+if (platformInfo.env.development || platformInfo.env.test) {
+  sms.install()
+}
+
+log.transports.console.level = platformInfo.logLevel;
+log.transports.file.level = platformInfo.logLevel;
 
 function initUserDirectory(d: string) {
   if (!fs.existsSync(d)) {
@@ -36,8 +43,7 @@ function initUserDirectory(d: string) {
 }
 
 let utilityProcess: Electron.UtilityProcess
-// don't need this
-let newWindows: number[] = new Array();
+let newWindows: number[] = [];
 
 async function createUtilityProcess() {
   if (utilityProcess) {
@@ -45,13 +51,8 @@ async function createUtilityProcess() {
   }
 
   const args = {
-    isPackage: `${electron.app.isPackaged}`,
-    locale: electron.app.getLocale(),
-    userDir: electron.app.getPath('userData'),
-    downloadDir: electron.app.getPath('downloads'),
-    homeDir: electron.app.getPath('home'),
-    shouldUseDarkColors: `${electron.nativeTheme.shouldUseDarkColors}`,
-    version: electron.app.getVersion()
+    bksPlatformInfo: JSON.stringify(platformInfo),
+    bksConfigSource: JSON.stringify(bksConfig.source),
   }
 
   utilityProcess = electron.utilityProcess.fork(
@@ -59,26 +60,17 @@ async function createUtilityProcess() {
     [],
     {
       env: { ...process.env, ...args },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'inherit', 'inherit'],
       serviceName: 'BeekeeperUtility'
     }
   );
 
-  const utilLog = log.scope('UTILITY')
-
-  utilityProcess.stdout.on('data', (chunk) => {
-    utilLog.log(chunk.toString())
-  })
-
-  utilityProcess.stderr.on('data', (chunk) => {
-    utilLog.error(chunk.toString())
-  })
 
   utilityProcess.on('exit', async (code) => {
     // if non zero exit code
-    console.log("UTILITY DEAD", code)
+    log.log("UTILITY DEAD", code)
     if (code) {
-      utilLog.info('Utility process died, restarting')
+      log.info('Utility process died, restarting')
       utilityProcess = null;
       await createUtilityProcess();
       createAndSendPorts(false, true);
@@ -87,7 +79,7 @@ async function createUtilityProcess() {
 
   utilityProcess.on("message", (msg: UtilProcMessage) => {
     if (msg.type === 'openExternal') {
-      electron.shell.openExternal(msg.url)
+      safeOpenExternal(msg.url)
     }
   })
 
@@ -126,11 +118,14 @@ let menuHandler
 log.debug("registering schema")
 // Scheme must be registered before the app is ready
 protocol.registerSchemesAsPrivileged([{scheme: 'app', privileges: { secure: true, standard: true } }])
+protocol.registerSchemesAsPrivileged([{scheme: 'plugin', privileges: { secure: true, standard: true } }])
 let initialized = false
 
 async function initBasics() {
   // this creates the app:// protocol we use for loading assets
   ProtocolBuilder.createAppProtocol()
+  // this creates the plugin:// protocol we use for loading plugins
+  ProtocolBuilder.createPluginProtocol()
   if (initialized) return settings
   initialized = true
   await ormConnection.connect()
@@ -147,16 +142,22 @@ async function initBasics() {
     process.env['LD_LIBRARY_PATH'] = `${process.env.LD_LIBRARY_PATH}:${settings.oracleInstantClient.value}`
   }
 
+  const defaultChannel = settings.useBeta.defaultValue === 'true' ? 'beta' : 'stable'
+  // we should change the default channel based on the current app channel
+  if (platformInfo.parsedAppVersion.channel !== defaultChannel) {
+    settings.useBeta.defaultValue = platformInfo.parsedAppVersion.channel === 'beta' ? 'true' : 'false'
+    log.debug("Updating the default channel to", platformInfo.parsedAppVersion.channel)
+    await settings.useBeta.save()
+  }
+
   log.debug("setting up the menu")
-  menuHandler = new MenuHandler(electron, settings)
+  menuHandler = new MenuHandler(electron, settings, bksConfig)
   menuHandler.initialize()
   log.debug("Building the window")
   log.debug("managing updates")
-  manageUpdates()
+  manageUpdates(settings.useBeta.valueAsBool)
   ipcMain.on(AppEvent.openExternally, (_e: electron.IpcMainEvent, args: any[]) => {
-    const url = args[0]
-    if (!url) return
-    electron.shell.openExternal(url)
+    safeOpenExternal(args?.[0])
   })
   return settings
 }
@@ -165,6 +166,8 @@ async function initBasics() {
 app.on('window-all-closed', () => {
   // On macOS it is common for applications and their menu bar
   // to stay active until the user quits explicitly with Cmd + Q
+  ipcMain.emit("disable-connection-menu-items");
+
   if (process.platform !== 'darwin') {
     app.quit()
   }
@@ -172,6 +175,10 @@ app.on('window-all-closed', () => {
 
 ipcMain.handle('platformInfo', () => {
   return platformInfo;
+})
+
+ipcMain.handle('bksConfigSource', () => {
+  return bksConfig.source;
 })
 
 app.on('activate', async (_event, hasVisibleWindows) => {
@@ -198,9 +205,11 @@ app.on('browser-window-created', (_event: electron.Event, window: electron.Brows
 app.on('ready', async () => {
   if (isDevelopment && !process.env.IS_TEST) {
 
-      installExtension(VUEJS_DEVTOOLS)
-        .then((name) => console.log(`Added Extension:  ${name}`))
-        .catch((err) => console.log('An error occurred: ', err));
+    // Per: www.npmjs.com/package/electron-devtools-installer?activeTab=readme#what-extensions-can-i-use
+    // https://chromewebstore.google.com/detail/vuejs-devtools/iaajmlceplecbljialhhkmedjlpdblhp
+    installExtension('iaajmlceplecbljialhhkmedjlpdblhp')
+      .then((name) => console.log(`Added Extension:  ${name}`))
+      .catch((err) => console.log('An error occurred: ', err));
     // Need to explicitly disable CORS when running in dev mode because
     // we can't connect to bigquery-emulator on localhost.
     // See: https://github.com/electron/electron/issues/23664
@@ -220,6 +229,8 @@ app.on('ready', async () => {
   } else {
     if (getActiveWindows().length === 0) {
       const settings = await initBasics()
+      initializeSecurity(app);
+      initializeFileHelpers();
       await createUtilityProcess()
 
       await buildWindow(settings)
@@ -228,12 +239,13 @@ app.on('ready', async () => {
 
 })
 
-function createAndSendPorts(filter: boolean, utilDied: boolean = false) {
+function createAndSendPorts(filter: boolean, utilDied = false) {
   getActiveWindows().forEach((w) => {
     if (!filter || newWindows.includes(w.winId)) {
       const { port1, port2 } = new electron.MessageChannelMain();
       const sId = uuidv4();
       log.info('SENDING PORT TO RENDERER: ', sId)
+      w.sId = sId;
       utilityProcess.postMessage({ type: 'init', sId }, [port1]);
       w.webContents.postMessage('port', { sId, utilDied }, [port2]);
       w.onClose((_event: electron.Event) => {
@@ -249,14 +261,16 @@ function createAndSendPorts(filter: boolean, utilDied: boolean = false) {
 ipcMain.handle('requestPorts', async () => {
   log.info('Client requested ports');
   if (!utilityProcess || !utilityProcess.pid) {
+    log.info('NO UTIL PROCESS')
     utilityProcess = null;
     await createUtilityProcess();
   }
-  createAndSendPorts(false);
-})
 
-ipcMain.on('ready', (_event) => {
-  createAndSendPorts(true);
+  if (newWindows.length > 0) {
+    createAndSendPorts(true);
+  } else {
+    createAndSendPorts(false);
+  }
 })
 
 // Open a connection from a file (e.g. ./sqlite.db)
@@ -300,6 +314,27 @@ ipcMain.handle('maximizeWindow', () => {
 
 ipcMain.handle('closeWindow', () => {
   getCurrentWindow().closeWindow();
+})
+
+ipcMain.handle('clipboard:write', async (_event, { content, image }: { content: string, image: boolean }) => {
+  let item: ClipboardItem;
+  if (image) {
+    const im = electron.nativeImage.createFromDataURL(content);
+    const pngBuffer = im.toPNG();
+    const blob = new Blob([pngBuffer], { type: 'image/png' });
+    item = new ClipboardItem({
+      'image/png': blob
+    });
+  } else {
+    item = new ClipboardItem({
+      'text/plain': content
+    });
+  }
+  await clipboard.write([item]);
+})
+
+ipcMain.handle('clipboard:read', async () => {
+  return await clipboard.readText();
 })
 
 // Exit cleanly on request from parent process in development mode.

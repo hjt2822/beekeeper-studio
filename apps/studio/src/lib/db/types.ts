@@ -1,11 +1,42 @@
-import { CancelableQuery, DatabaseFilterOptions, ExtendedTableColumn, FilterOptions, ImportFuncOptions, NgQueryResult, OrderBy, PrimaryKeyColumn, Routine, SchemaFilterOptions, StreamResults, SupportedFeatures, TableChanges, TableColumn, TableFilter, TableIndex, TableInsert, TableOrView, TablePartition, TableProperties, TableResult, TableTrigger, TableUpdateResult } from './models';
-import { AlterPartitionsSpec, AlterTableSpec, IndexAlterations, RelationAlterations, TableKey } from '@shared/lib/dialects/models';
+import { CancelableQuery, DatabaseFilterOptions, ExtendedTableColumn, FieldDescriptor, FieldEditData, FilterOptions, ImportFuncOptions, NgQueryResult, OrderBy, PrimaryKeyColumn, Routine, SchemaFilterOptions, ServerStatistics, StreamResults, SupportedFeatures, TableChanges, TableColumn, TableFilter, TableIndex, TableInsert, TableOrView, TablePartition, TableProperties, TableResult, TableTrigger, TableUpdateResult } from './models';
+import { AlterPartitionsSpec, AlterTableSpec, CreateTableSpec, IndexAlterations, RelationAlterations, TableKey } from '@shared/lib/dialects/models';
+import type { SshMode } from '@/common/interfaces/IConnection';
 
-export type ConnectionType = 'sqlite' | 'sqlserver' | 'redshift' | 'cockroachdb' | 'mysql' | 'postgresql' | 'mariadb' | 'cassandra' | 'bigquery' | 'firebird' | 'oracle' | 'tidb' | 'libsql';
+export const DatabaseTypes = [
+  'sqlite',
+  'sqlserver',
+  'redshift',
+  'cockroachdb',
+  'mysql',
+  'postgresql',
+  'mariadb',
+  'cassandra',
+  'scylladb',
+  'oracle',
+  'bigquery',
+  'firebird',
+  'tidb',
+  'starrocks',
+  'libsql',
+  'clickhouse',
+  'duckdb',
+  'greengage',
+  'mongodb',
+  'sqlanywhere',
+  'surrealdb',
+  'redis',
+  'trino',
+  'bedrock',
+  'dynamodb',
+  'snowflake'
+] as const
+
+export type ConnectionType = typeof DatabaseTypes[number]
 
 export const ConnectionTypes = [
   { name: 'MySQL', value: 'mysql' },
   { name: 'TiDB', value: 'tidb' },
+  { name: 'StarRocks', value: 'starrocks' },
   { name: 'MariaDB', value: 'mariadb' },
   { name: 'Postgres', value: 'postgresql' },
   { name: 'SQLite', value: 'sqlite' },
@@ -13,29 +44,45 @@ export const ConnectionTypes = [
   { name: 'SQL Server', value: 'sqlserver' },
   { name: 'Amazon Redshift', value: 'redshift' },
   { name: 'CockroachDB', value: 'cockroachdb' },
+  { name: 'GreengageDB', value: 'greengage' },
   { name: 'Oracle', value: 'oracle' },
   { name: 'Cassandra', value: 'cassandra' },
+  { name: 'ScyllaDB', value: 'scylladb' },
   { name: 'BigQuery', value: 'bigquery' },
   { name: 'Firebird', value: 'firebird'},
-]
+  { name: 'DuckDB', value: 'duckdb' },
+  { name: 'ClickHouse', value: 'clickhouse' },
+  { name: 'MongoDB', value: 'mongodb' },
+  { name: 'SqlAnywhere', value: 'sqlanywhere' },
+  { name: 'Trino', value: 'trino' },
+  { name: 'SurrealDB', value: 'surrealdb' },
+  { name: 'Redis', value: 'redis' },
+  { name: 'Bedrock', value: 'bedrock' },
+  { name: 'DynamoDB', value: 'dynamodb' },
+  { name: 'Snowflake', value: 'snowflake' }
+] as const satisfies { name: string; value: ConnectionType }[]
 
+/** `value` should be recognized by codemirror */
 export const keymapTypes = [
   { name: "Default", value: "default" },
   { name: "Vim", value: "vim" }
-]
+] as const
 
+// if you update this, you may need to update `translateOperator` in the mongodb driver
 export const TableFilterSymbols = [
-  { value: '=', label: 'equals' },
-  { value: '!=', label: 'does not equal'},
-  { value: 'like', label: 'like' },
-  { value: '<', label: 'less than' },
-  { label: 'less than or equal', value: '<=' },
-  { value: '>', label: 'greater than'},
-  { label: "greater than or equal", value:">=" },
-  { label: 'in', value:"in", arrayInput: true },
-  { label: "is null", value: "is", nullOnly: true },
-  { label: "is not null", value: "is not", nullOnly: true }
-
+    { value: '=', label: 'equals', type: 'standard' },
+    { value: '!=', label: 'does not equal', type: 'standard'},
+    { value: 'like', label: 'like', type: 'standard' },
+    { value: 'not like', label: 'not like', type: 'standard' },
+    { value: 'ilike', label: 'ilike', type: 'ilike' },
+    { value: 'not ilike', label: 'not ilike', type: 'ilike' },
+    { value: '<', label: 'less than', type: 'standard' },
+    { value: '<=', label: 'less than or equal', type: 'standard' },
+    { value: '>', label: 'greater than', type: 'standard'},
+    { value: ">=", label: "greater than or equal", type: 'standard' },
+    { value: "in", label: 'in', arrayInput: true, type: 'standard' },
+    { value: "is", label: "is null", nullOnly: true, type: 'standard' },
+    { value: "is not", label: "is not null", nullOnly: true, type: 'standard' }
 ]
 
 export enum AzureAuthType {
@@ -43,8 +90,21 @@ export enum AzureAuthType {
   Password,
   AccessToken,
   MSIVM,
-  ServicePrincipalSecret
+  ServicePrincipalSecret,
+  CLI
 }
+
+export enum IamAuthType {
+  Key = 'iam_key',
+  File = 'iam_file',
+  CLI = 'iam_cli'
+}
+
+export const IamAuthTypes = [
+  { name: 'IAM Authentication Using Access Key and Secret Key', value: IamAuthType.Key },
+  { name: 'IAM Authentication Using Credentials File', value: IamAuthType.File },
+  { name: 'AWS CLI Authentication', value: IamAuthType.CLI }
+]
 
 // supported auth types that actually work :roll_eyes: default i'm looking at you
 export const AzureAuthTypes = [
@@ -53,17 +113,45 @@ export const AzureAuthTypes = [
   { name: 'Azure AD SSO', value: AzureAuthType.AccessToken },
   // This may be reactivated when we move to client server architecture
   // { name: 'MSI VM', value: AzureAuthType.MSIVM },
-  { name: 'Azure Service Principal Secret', value: AzureAuthType.ServicePrincipalSecret }
+  { name: 'Azure Service Principal Secret', value: AzureAuthType.ServicePrincipalSecret },
+  { name: 'Azure CLI Authentication', value: AzureAuthType.CLI }
 ];
 
+export enum SnowflakeAuthType {
+  Default,
+  MFACode,
+  MFANotif,
+  Browser
+}
+
+export const SnowflakeAuthTypes = [
+  { name: 'Username / Password', value: SnowflakeAuthType.Default },
+  { name: 'SSO with Browser', value: SnowflakeAuthType.Browser },
+  { name: 'Multi-Factor Authentication with Code', value: SnowflakeAuthType.MFACode },
+  { name: 'Multi-Factor Authentication with Duo', value: SnowflakeAuthType.MFANotif }
+]
+
 export interface RedshiftOptions {
+  clusterIdentifier?: string;
+  databaseGroup?: string;
+  tokenDurationSeconds?: number;
+  isServerless?: boolean;
+}
+
+export interface DynamoDBOptions {
+  /** Custom endpoint, e.g. `http://localhost:8000` for DynamoDB Local. */
+  endpoint?: string;
+}
+
+export interface IamAuthOptions {
+  awsProfile?: string
+  profiles?: string[];
   iamAuthenticationEnabled?: boolean
   accessKeyId?: string;
   secretAccessKey?: string;
   awsRegion?: string;
-  clusterIdentifier?: string;
-  databaseGroup?: string;
-  tokenDurationSeconds?: number;
+  authType?: IamAuthType;
+  cliPath?: string;
 }
 
 export interface CassandraOptions {
@@ -82,6 +170,19 @@ export interface AzureAuthOptions {
   tenantId?: string;
   clientSecret?: string;
   msiEndpoint?: string;
+  cliPath?: string;
+}
+
+// SQL Server integrated authentication (Kerberos/Windows via the msnodesqlv8 ODBC driver).
+export type SqlServerEncryptionMode = 'off' | 'on' | 'strict'
+export interface SqlServerOptions {
+  // off -> Encrypt=no; on -> Encrypt=yes + TrustServerCertificate=yes (trust, no validation);
+  // strict -> Encrypt=strict (TDS 8.0, validates; optionally pins serverCertificate).
+  encryptionMode?: SqlServerEncryptionMode
+  // strict mode only: path to a PEM/DER/CER file to pin the server's certificate against.
+  serverCertificate?: string
+  // Optional ODBC ServerSPN override when the auto-derived MSSQLSvc/<host>:<port> is wrong.
+  serverSpn?: string
 }
 export interface LibSQLOptions {
   mode: 'url' | 'file';
@@ -89,6 +190,47 @@ export interface LibSQLOptions {
   syncUrl?: string;
   syncPeriod?: number;
 }
+
+export interface SQLAnywhereOptions {
+  mode: 'server' | 'file';
+  serverName?: string;
+  databaseFile?: string;
+}
+
+export interface SurrealDBOptions {
+  authType?: SurrealAuthType;
+  protocol?: 'http' | 'https' | 'ws' | 'wss';
+  namespace?: string;
+  token?: string;
+}
+
+export interface SnowflakeOptions {
+  authType?: SnowflakeAuthType;
+  accountId?: string;
+  defaultWarehouse?: string;
+  passcode?: string;
+}
+
+export enum SurrealAuthType {
+  Root,
+  Namespace,
+  Database,
+  RecordAccess,
+  Token,
+  Anonymous
+}
+
+export const SurrealAuthTypes = [
+  { name: 'Root', value: SurrealAuthType.Root },
+  { name: 'Namespace', value: SurrealAuthType.Namespace },
+  { name: 'Database', value: SurrealAuthType.Database },
+  // NOTE (@day): disabling for now, as will take a bit more work
+  // { name: 'Record Access', value: SurrealAuthType.RecordAccess },
+  { name: 'Token', value: SurrealAuthType.Token },
+  // NOTE (@day): this doesn't seem to do anything? Won't be able to access tables or query data
+  // { name: 'Anonymous', value: SurrealAuthType.Anonymous }
+];
+
 
 export enum DatabaseElement {
   TABLE = 'TABLE',
@@ -102,6 +244,8 @@ export interface IDbConnectionDatabase {
   database: string,
   connected: Nullable<boolean>,
   connecting: boolean,
+  // Only used for surrealdb
+  namespace: string
 }
 
 export interface IDbConnectionServerSSHConfig {
@@ -111,13 +255,24 @@ export interface IDbConnectionServerSSHConfig {
   password: Nullable<string>
   privateKey: Nullable<string>
   passphrase: Nullable<string>
+  identityFiles?: string[]
+  identitiesOnly?: boolean
   bastionHost: Nullable<string>
+  bastionPort: Nullable<number>
+  bastionUser: Nullable<string>
+  bastionPassword: Nullable<string>
+  bastionPrivateKey: Nullable<string>
+  bastionPassphrase: Nullable<string>
+  bastionIdentityFiles?: string[]
+  bastionIdentitiesOnly?: boolean
+  bastionMode: Nullable<SshMode>
   keepaliveInterval: number
   useAgent: boolean
 }
 
 export interface IDbConnectionServerConfig {
   client: Nullable<ConnectionType>,
+  url?: string,
   host?: string,
   port: Nullable<number>,
   domain: Nullable<string>,
@@ -137,16 +292,30 @@ export interface IDbConnectionServerConfig {
   localHost?: string,
   localPort?: number,
   trustServerCertificate?: boolean
+  // SQL Server only. Use OS-level integrated authentication (SSPI/Kerberos/NTLM)
+  // via the native msnodesqlv8 ODBC driver instead of a username/password.
+  windowsAuthEnabled?: boolean
+  // SQL Server integrated auth only. Encryption mode, optional pinned server certificate,
+  // and optional SPN override -- consumed by connectWindowsAuth() / the ODBC conn string.
+  sqlServerOptions?: SqlServerOptions
   instantClientLocation?: string
   oracleConfigLocation?: string
   options?: any
   redshiftOptions?: RedshiftOptions
+  iamAuthOptions?: IamAuthOptions
   cassandraOptions?: CassandraOptions
   bigQueryOptions?: BigQueryOptions
   azureAuthOptions?: AzureAuthOptions
   authId?: number
   libsqlOptions?: LibSQLOptions
+  sqlAnywhereOptions?: SQLAnywhereOptions
+  surrealDbOptions?: SurrealDBOptions
+  dynamoDbOptions?: DynamoDBOptions
+  snowflakeOptions?: SnowflakeOptions
   runtimeExtensions?: string[]
+  // Non-fatal ~/.ssh/config issues surfaced to the user (e.g. untrusted config,
+  // missing IdentityFile). Shown as warning toasts on connect/test.
+  sshConfigWarnings?: string[]
 }
 
 export interface IBasicDatabaseClient {
@@ -156,6 +325,8 @@ export interface IBasicDatabaseClient {
   listCharsets(): Promise<string[]>,
   getDefaultCharset(): Promise<string>,
   listCollations(charset: string): Promise<string[]>,
+  getCompletions(cmd: string): Promise<string[]>,
+  getShellPrompt(): Promise<string>,
 
   connect(): Promise<void>,
   disconnect(): Promise<void>,
@@ -171,7 +342,9 @@ export interface IBasicDatabaseClient {
   getTableReferences(table: string, schema?: string): Promise<string[]>,
   getTableKeys(table: string, schema?: string): Promise<TableKey[]>,
   listTablePartitions(table: string, schema?: string): Promise<TablePartition[]>,
-  query(queryText: string, options?: any): Promise<CancelableQuery>,
+  executeCommand(commandText: string): Promise<NgQueryResult[]>,
+  query(queryText: string, tabId: number, options?: any): Promise<CancelableQuery>,
+  getResultEditData(queryText: string, fields: FieldDescriptor[]): Promise<FieldEditData[]>
   executeQuery(queryText: string, options?: any): Promise<NgQueryResult[]>,
   listDatabases(filter?: DatabaseFilterOptions): Promise<string[]>,
   getTableProperties(table: string, schema?: string): Promise<TableProperties | null>,
@@ -180,12 +353,15 @@ export interface IBasicDatabaseClient {
   getPrimaryKey(table: string, schema?: string): Promise<string | null>,
   getPrimaryKeys(table: string, schema?: string): Promise<PrimaryKeyColumn[]>;
 
-  createDatabase(databaseName: string, charset: string, collation: string): Promise<void>,
+  createDatabase(databaseName: string, charset: string, collation: string): Promise<string>,
   createDatabaseSQL(): Promise<string>,
   getTableCreateScript(table: string, schema?: string): Promise<string>,
   getViewCreateScript(view: string, schema?: string): Promise<string[]>,
   getMaterializedViewCreateScript(view: string, schema?: string): Promise<string[]>,
-  getRoutineCreateScript(routine: string, type: string, schema?: string): Promise<string[]>,
+  getRoutineCreateScript(routine: string, type: string, schema?: string, id?: string): Promise<string[]>,
+  createTable(table: CreateTableSpec): Promise<void>,
+  getCollectionValidation(collection: string): Promise<any>,
+  setCollectionValidation(params: any): Promise<void>,
 
   alterTableSql(change: AlterTableSpec): Promise<string>,
   alterTable(change: AlterTableSpec): Promise<void>,
@@ -197,7 +373,7 @@ export interface IBasicDatabaseClient {
   alterPartition(changes: AlterPartitionsSpec): Promise<void>,
 
   applyChangesSql(changes: TableChanges): Promise<string>,
-  applyChanges(changes: TableChanges): Promise<TableUpdateResult[]>,
+  applyChanges(changes: TableChanges, tabId?: number): Promise<TableUpdateResult[]>,
   setTableDescription(table: string, description: string, schema?: string): Promise<string>
   setElementName(elementName: string, newElementName: string, typeOfElement: DatabaseElement, schema?: string): Promise<void>,
   dropElement(elementName: string, typeOfElement: DatabaseElement, schema?: string): Promise<void>,
@@ -205,7 +381,7 @@ export interface IBasicDatabaseClient {
   truncateAllTables(schema?: string): Promise<void>
 
 
-  getTableLength(table: string, schema?: string): Promise<number>,
+  getTableLength(table?: string, schema?: string): Promise<number>,
   selectTop(table: string, offset: number, limit: number, orderBy: OrderBy[], filters: string | TableFilter[], schema?: string, selects?: string[]): Promise<TableResult>,
   selectTopSql(table: string, offset: number, limit: number, orderBy: OrderBy[], filters: string | TableFilter[], schema?: string, selects?: string[]): Promise<string>,
   selectTopStream(table: string, orderBy: OrderBy[], filters: string | TableFilter[], chunkSize: number, schema?: string): Promise<StreamResults>
@@ -215,8 +391,10 @@ export interface IBasicDatabaseClient {
   duplicateTable(tableName: string, duplicateTableName: string, schema?: string): Promise<void>
   duplicateTableSql(tableName: string, duplicateTableName: string, schema?: string): Promise<string>
 
-  getInsertQuery(tableInsert: TableInsert): Promise<string>
+  getInsertQuery(tableInsert: TableInsert, runAsUpsert?: boolean): Promise<string>
   syncDatabase(): Promise<void>
+
+  getServerStatistics(): Promise<ServerStatistics | null>
 
   importStepZero(table: TableOrView): Promise<any>
   importBeginCommand(table: TableOrView, importOptions?: ImportFuncOptions): Promise<any>
@@ -225,4 +403,8 @@ export interface IBasicDatabaseClient {
   importCommitCommand (table: TableOrView, importOptions?: ImportFuncOptions): Promise<any>
   importRollbackCommand (table: TableOrView, importOptions?: ImportFuncOptions): Promise<any>
   importFinalCommand (table: TableOrView, importOptions?: ImportFuncOptions): Promise<any>
+
+  /** Returns a query for the given filter */
+  getQueryForFilter(filter: TableFilter): Promise<string>
+  getFilteredDataCount(table: string, schema: string | null, filter: string ): Promise<string>
 }

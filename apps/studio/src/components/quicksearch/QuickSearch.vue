@@ -24,7 +24,47 @@
         class="results no-results"
         v-if="!results.length && searchTerm"
       >
+        <x-progressbar v-if="searching" />
         <li>No Results</li>
+      </ul>
+      <ul
+        class="results"
+        v-if="!results.length && !searchTerm && historyResults.length"
+      >
+        <x-progressbar v-if="searching" />
+        <li
+          class="result-item"
+          v-for="(blob, idx) in historyResults"
+          :key="idx"
+          :class="{selected: idx === selectedItem}"
+          @click.prevent="handleHistoryClick($event, blob)"
+        >
+          <table-icon
+            v-if="blob.tabType === 'table' || blob.tabDetails?.tabType === 'table'"
+            :table="blob"
+          />
+          <i
+            class="material-icons item-icon query"
+            v-else-if="blob.tabType === 'table-properties' || blob.tabDetails?.tabType === 'table-properties'"
+          >construction</i>
+          <i
+            class="material-icons item-icon connection"
+            v-else-if="blob.tabType === 'connection' || blob.tabDetails?.tabType === 'connection'"
+          >power</i>
+          <i
+            class="material-icons item-icon database"
+            v-else-if="blob.tabType === 'database' || blob.tabDetails?.tabType === 'database'"
+          >storage</i>
+          <i
+            class="material-icons item-icon plugin"
+            v-else-if="blob.tabType.startsWith('plugin-')"
+          >{{ snapshotsById[blob.generatedPluginId]?.manifest.icon || 'code' }}</i>
+          <i
+            class="material-icons item-icon database"
+            v-else
+          >code</i>
+          <span class="truncate" v-html="highlightHistory(blob)" />
+        </li>
       </ul>
       <div
         class="results empty"
@@ -92,7 +132,7 @@
             class="material-icons item-icon database"
             v-if="blob.type === 'database'"
           >storage</i>
-          <span v-html="highlight(blob)" />
+          <span v-html="blob.highlight" />
         </li>
       </ul>
     </div>
@@ -102,16 +142,20 @@
 <script lang="ts">
 import _ from 'lodash'
 import Vue from 'vue'
-import { mapGetters, mapState } from 'vuex'
+import { mapActions, mapGetters, mapState } from 'vuex'
 import { AppEvent } from '@/common/AppEvent'
 import TableIcon from '@/components/common/TableIcon.vue'
 import { escapeHtml } from '@shared/lib/tabulator'
+import { isUltimateType } from '@/common/interfaces/IConnection'
+import { searchItems } from '@/store/modules/SearchModule'
+
 export default Vue.extend({
   components: { TableIcon },
   mounted() {
     document.addEventListener('mousedown', this.maybeHide)
     this.$nextTick(() => {
       this.$refs.searchBox.focus()
+      this.getTabHistory()
     })
   },
   beforeDestroy() {
@@ -122,7 +166,8 @@ export default Vue.extend({
       active: false,
       searchTerm: null,
       results: [],
-      selectedItem: 0
+      selectedItem: 0,
+      historyResults: []
     }
   },
   watch: {
@@ -134,10 +179,9 @@ export default Vue.extend({
       }
 
     },
-    async searchTerm() {
+    searchTermAndDatabase() {
       if (this.searchTerm) {
-        const ids: any[] = await this.searchIndex.searchAsync(this.searchTerm, 20)
-        this.results = this.database.filter((blob) => ids.includes(blob.id))
+        this.results = searchItems(this.database, this.searchTerm, 20)
 
         if (this.selectedItem >= this.results.length) this.selectedItem = this.results.length - 1
       } else {
@@ -145,11 +189,20 @@ export default Vue.extend({
         this.selectedItem = 0
       }
     },
-
+    searchTerm() {
+      this.search(this.searchTerm)
+    },
   },
   computed: {
-    ...mapState('search', ['searchIndex']),
-    ...mapGetters({ database: 'search/database'}),
+    ...mapState(['usedConfig']),
+    ...mapGetters({ database: 'search/database', isUltimate: 'isUltimate' }),
+    ...mapState(['tables']),
+    ...mapState('search', ['searching']),
+    ...mapState('tabs', { 'tabs': 'tabs' }),
+    ...mapGetters("plugins/snapshots", ['snapshotsById']),
+    searchTermAndDatabase() {
+      return [this.searchTerm ,this.database];
+    },
     elements() {
       if (this.$refs.menu) {
         return Array.from(this.$refs.menu.getElementsByTagName("*"))
@@ -158,36 +211,36 @@ export default Vue.extend({
       }
     },
     keymap() {
-      const result = {}
-
-      result[this.ctrlOrCmd('k')] = this.openSearch
-      result[this.ctrlOrCmd('o')] = this.openSearch
-
-      result['up'] = this.selectUp
-      result['down'] = this.selectDown
-      result['esc'] = this.closeSearch
-      result['enter'] = this.enter
-      result[this.ctrlOrCmd('enter')] = this.metaEnter
-      // /announce I like emacs bindings and there's nothing you can do to stop me.
-      // /me *evil laugh*
-      result['ctrl+p'] = this.selectUp
-      result['ctrl+n'] = this.selectDown
-      result['right'] = this.persistentSearchEnter
-      result[this.ctrlOrCmd('right')] = this.persistentSearchMetaEnter
-
-      return result
+      return this.$vHotkeyKeymap({
+        'quickSearch.focusSearch': this.openSearch,
+        'quickSearch.close': this.closeSearch,
+        'quickSearch.selectUp': this.selectUp,
+        'quickSearch.selectDown': this.selectDown,
+        'quickSearch.open': this.enter,
+        'quickSearch.altOpen': this.metaEnter,
+        'quickSearch.openInBackground': this.persistentSearchEnter,
+        'quickSearch.altOpenInBackground': this.persistentSearchMetaEnter,
+      })
     }
   },
   methods: {
-    highlight(blob) {
-      const dangerous = blob.title
-      const text = escapeHtml(dangerous || "unknown item")
-      const regex = new RegExp(this.searchTerm.split(/\s+/).filter((i) => i?.length).join("|"), 'gi')
-      const result = text.replace(regex, (match) => `<strong>${match}</strong>`)
-
-      return result
+    ...mapActions({
+      search: _.debounce((dispatch, term) => dispatch('search/search', term), 300),
+    }),
+    async getTabHistory() {
+      const results = await Vue.prototype.$util.send('appdb/tabhistory/get', { workspaceId: this.usedConfig.workspaceId, connectionId: this.usedConfig.id });
+      this.historyResults = results
     },
+    highlightHistory(blob) {
+      const dangerous = blob.title
+      let historyText = [escapeHtml(dangerous || 'unknown item')]
 
+      if (blob.deletedAt) {
+        historyText.push('recently closed')
+      }
+
+      return historyText.join(' - ')
+    },
     openSearch() {
       this.$nextTick(() => {
         this.$refs.searchBox.focus()
@@ -214,11 +267,18 @@ export default Vue.extend({
           this.$root.$emit('favoriteClick', result.item)
           break;
         case 'connection':
-          await this.$store.dispatch('disconnect')
+          if (!this.isUltimate && isUltimateType(result.item.connectionType)) {
+            this.$noty.error('Cannot switch to Ultimate only connection.')
+            return
+          }
+
           try {
-            await this.$store.dispatch('connect', result.item)
+            await this.$store.dispatch('disconnect')
+            const { auth, cancelled } = await this.$bks.unlock();
+            if (cancelled) return;
+            await this.$store.dispatch('connect', { config: result.item, auth })
           } catch (ex) {
-            this.$noty.error("Error establishing a connection")
+            this.$noty.error(`Error establishing a connection: ${ex?.message ?? ex}`)
             console.error(ex)
           }
           break;
@@ -240,6 +300,15 @@ export default Vue.extend({
       }
       if (!persistSearch) this.closeSearch()
     },
+    async handleHistoryClick(_event: MouseEvent, result: any) {
+      this.closeSearch()
+      if (result.deletedAt) {
+        result.deletedAt = null
+        await this.$store.dispatch('tabs/add', { item: result } )
+      }
+
+      return await this.$store.dispatch('tabs/setActive', result)
+    },
     handleClick(event: MouseEvent, result: any) {
       if (event.ctrlKey) {
         this.submitAlt(result)
@@ -248,13 +317,22 @@ export default Vue.extend({
       }
     },
     enter() {
-      const result = this.results[this.selectedItem]
-      this.submit(result)
+      let result = this.results[this.selectedItem]
+      if (!this.results.length && !this.searchTerm && this.historyResults.length) {
+        result = this.historyResults[this.selectedItem]
+        this.handleHistoryClick(_, result)
+      } else {
+        this.submit(result)
+      }
     },
     metaEnter() {
-      const result = this.results[this.selectedItem]
-      this.submitAlt(result)
-
+      let result = this.results[this.selectedItem]
+      if (!this.results.length && !this.searchTerm && this.historyResults.length) {
+        result = this.historyResults[this.selectedItem]
+        this.handleHistoryClick(_, result)
+      } else {
+        this.submitAlt(result)
+      }
     },
     persistentSearchEnter(){
       const cursorPosition = this.$refs.searchBox.selectionStart
@@ -280,3 +358,16 @@ export default Vue.extend({
   }
 })
 </script>
+
+<style scoped lang="scss">
+.results {
+  position: relative;
+
+  x-progressbar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+  }
+}
+</style>

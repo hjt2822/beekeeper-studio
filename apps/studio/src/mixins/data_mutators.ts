@@ -1,5 +1,6 @@
 import _ from 'lodash'
 import { Mutators } from '../lib/data/tools'
+import { TabulatorFormatterParams } from '@/common/tabulator'
 import helpers, { escapeHtml } from '@shared/lib/tabulator'
 export const NULL = '(NULL)'
 import {CellComponent} from 'tabulator-tables'
@@ -15,9 +16,6 @@ export function emptyResult(value: any) {
   }
   if (_.isString(value) && _.isEmpty(value)) {
     return buildNullValue('EMPTY')
-  }
-  if (_.isArray(value) && value.length === 0) {
-    return buildNullValue('NULL')
   }
 
   return null
@@ -44,20 +42,48 @@ export default {
       const cellValue = cell.getValue()
       return cellValue.map(cv => `<span class="mapper-pill">${cv}</span>`).join('')
     },
-    cellTooltip(_event, cell: CellComponent) {
-      const nullValue = emptyResult(cell.getValue())
-      return nullValue ? nullValue : escapeHtml(this.niceString(cell.getValue(), true))
+    cellTooltip(
+      _event,
+      cell: CellComponent
+    ) {
+      const params: TabulatorFormatterParams = cell.getColumn().getDefinition().formatterParams || {}
+      let cellValue = cell.getValue()
+
+      if (cellValue instanceof Uint8Array) {
+        const binaryEncoding = params.binaryEncoding || 'hex'
+        cellValue = `${_.truncate(this.niceString(cellValue, false, binaryEncoding), { length: 15 })} (as ${binaryEncoding} string)`
+      } else if (
+        !params?.fk &&
+        !params?.isPK &&
+        _.isInteger(Number(cellValue))
+      ) {
+        try {
+          cellValue += ` (${new Date(Number(cellValue)).toISOString()} in unixtime)`
+        } catch (e) {
+          console.error(`${cellValue} cannot be converted to a date`)
+        }
+      }
+      
+      const nullValue = emptyResult(cellValue)
+      return nullValue ? nullValue : escapeHtml(this.niceString(cellValue, true))
     },
     cellFormatter(
       cell: CellComponent,
-      params: { fk?: any[], isPK?: boolean, fkOnClick?: (e: MouseEvent, cell: CellComponent) => void },
+      params: { fk?: any[], isPK?: boolean, fkOnClick?: (e: MouseEvent, cell: CellComponent) => void, binaryEncoding?: string } = {},
       onRendered: (func: () => void) => void
     ) {
-      const nullValue = emptyResult(cell.getValue())
+      const classNames = []
+      let cellValue = cell.getValue()
+
+      if (cellValue instanceof Uint8Array) {
+        classNames.push('binary-type')
+      }
+
+      const nullValue = emptyResult(cellValue)
       if (nullValue) {
         return nullValue
       }
-      let cellValue = this.niceString(cell.getValue(), true)
+      cellValue = this.niceString(cellValue, true, params.binaryEncoding)
       cellValue = cellValue.replace(/\n/g, ' ↩ ');
 
       // removing the <pre> will break selection / copy paste, see ResultTable
@@ -74,18 +100,9 @@ export default {
           const fkLink = cell.getElement().querySelector('.fk-link') as HTMLElement
           fkLink.onclick = (e) => params.fkOnClick(e, cell);
         })
-      } else if (
-          params?.isPK != null &&
-          !params.isPK &&
-          _.isInteger(Number(cellValue))
-        ) {
-        try {
-          tooltip = `${new Date(Number(cellValue)).toISOString()} in unixtime`
-          result = buildFormatterWithTooltip(cellValue, tooltip)
-        } catch (e) {
-          console.error(`${cellValue} cannot be converted to a date`)
-        }
-    }
+      }
+
+      cell.getElement().classList.add(...classNames)
 
       return result;
     },

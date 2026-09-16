@@ -8,7 +8,8 @@ import {
 import { markdownTable } from "markdown-table";
 import { ElectronPlugin } from "@/lib/NativeWrapper";
 import Papa from "papaparse";
-import { stringifyRangeData, rowHeaderField } from "@/common/utils";
+import { stringifyRangeData, rowHeaderField, isNumericDataType } from "@/common/utils";
+import { defaultEscapeString } from "@shared/lib/dialects/models";
 import { escapeHtml } from "@shared/lib/tabulator";
 import _ from "lodash";
 // ?? not sure about this but :shrug:
@@ -103,15 +104,22 @@ export const commonColumnMenu = [
   resizeAllColumnsToFixedWidth,
 ];
 
-export function createMenuItem(label: string, shortcut = "") {
+export function createMenuItem(label: string, shortcut: string | string[] = "", ultimate = false) {
   label = `<x-label>${escapeHtml(label)}</x-label>`;
-  if (shortcut) shortcut = `<x-shortcut value="${shortcut}" />`;
-  return `<x-menuitem>${label}${shortcut}</x-menuitem>`;
+  if (typeof shortcut !== "string") {
+    shortcut = shortcut[0];
+  }
+  if (shortcut) shortcut = `<x-shortcut value="${escapeHtml(shortcut)}" />`;
+  const ultimateIcon = ultimate ? `<i class="material-icons menu-icon">stars</i>` : '';
+  return `<x-menuitem>${label}${shortcut}${ultimateIcon}</x-menuitem>`;
 }
 
 export async function copyRanges(options: {
   ranges: RangeComponent[];
-  type: "plain" | "tsv" | "json" | "markdown";
+  type: "plain" | "tsv" | "json" | "markdown" | "columnName" | "asIn";
+  table?: string;
+  schema?: string;
+  escapeString?: (s: string, quote?: boolean) => string;
 }): Promise<void>;
 export async function copyRanges(options: {
   ranges: RangeComponent[];
@@ -121,9 +129,10 @@ export async function copyRanges(options: {
 }): Promise<void>;
 export async function copyRanges(options: {
   ranges: RangeComponent[];
-  type: "plain" | "tsv" | "json" | "markdown" | "sql";
+  type: "plain" | "tsv" | "json" | "markdown" | "sql" | "columnName" | "asIn";
   table?: string;
   schema?: string;
+  escapeString?: (s: string, quote?: boolean) => string;
 }) {
   let text = "";
 
@@ -165,6 +174,23 @@ export async function copyRanges(options: {
       ]);
       break;
     }
+    case "asIn": {
+      const [colDataType] = Object.keys(rangeData[0])
+      const columns = await Vue.prototype.$util.send("conn/listTableColumns", {
+        table: options.table,
+        schema: options.schema
+      });
+      const dataType = columns.find(c => c.columnName === colDataType)?.dataType
+      const isNumericType = dataType ? isNumericDataType(dataType) : false
+
+      const escapeFn = options.escapeString || defaultEscapeString
+      const textArr = rangeData.map(rd => {
+        const [data] = Object.values(rd)
+        return isNumericType ? data : `'${escapeFn(String(data))}'`
+      })
+      text = `(\n${textArr.join(',\n')}\n)`
+      break
+    }
     case "sql":
       text = await Vue.prototype.$util.send("conn/getInsertQuery", {
         tableInsert: {
@@ -174,8 +200,11 @@ export async function copyRanges(options: {
         },
       });
       break;
+    case "columnName":
+      text = Object.keys(extractedData.data[0]).join(" ");
+      break;
   }
-  ElectronPlugin.clipboard.writeText(text);
+  await ElectronPlugin.clipboard.writeText(text);
   extractedData.sources.forEach((range) => {
     (range.getElement() as HTMLElement).classList.add("copied");
   });
@@ -185,8 +214,13 @@ function extractRanges(ranges: RangeComponent[]): ExtractedData {
   if (ranges.length === 0) return;
 
   if (ranges.length === 1) {
+    const rangeData = ranges[0].getData() as RangeData;
+    // Replace column identifiers with column titles
+    const columns = ranges[0].getColumns();
+    const mappedData = mapColumnIdsToTitles(rangeData, columns);
+
     return {
-      data: ranges[0].getData() as RangeData,
+      data: mappedData,
       sources: [ranges[0]],
     };
   }
@@ -209,8 +243,13 @@ function extractRanges(ranges: RangeComponent[]): ExtractedData {
   }
 
   if (sameColumns) {
+    const allData = ranges.reduce((data, range) => data.concat(range.getData()), []);
+    // Replace column identifiers with column titles
+    const columns = ranges[0].getColumns();
+    const mappedData = mapColumnIdsToTitles(allData, columns);
+
     return {
-      data: ranges.reduce((data, range) => data.concat(range.getData()), []),
+      data: mappedData,
       sources: ranges,
     };
   }
@@ -220,21 +259,33 @@ function extractRanges(ranges: RangeComponent[]): ExtractedData {
     const rows = sorted[0].getData() as RangeData;
     for (let i = 1; i < sorted.length; i++) {
       const data = sorted[i].getData() as RangeData;
-      for (let i = 0; i < data.length; i++) {
-        _.forEach(data[i], (value, key) => {
-          rows[i][key] = value;
+      for (let j = 0; j < data.length; j++) {
+        _.forEach(data[j], (value, key) => {
+          rows[j][key] = value;
         });
       }
     }
+
+    // Replace column identifiers with column titles
+    const allColumns = sorted.reduce((cols, range) => cols.concat(range.getColumns()), []);
+    const uniqueColumns = _.uniqBy(allColumns, col => col.getField());
+    const mappedData = mapColumnIdsToTitles(rows, uniqueColumns);
+
     return {
-      data: rows,
+      data: mappedData,
       sources: ranges,
     };
   }
 
   const source = _.first(ranges);
+  const rangeData = source.getData() as RangeData;
+
+  // Replace column identifiers with column titles
+  const columns = source.getColumns();
+  const mappedData = mapColumnIdsToTitles(rangeData, columns);
+
   return {
-    data: source.getData() as RangeData,
+    data: mappedData,
     sources: [source],
   };
 }
@@ -243,18 +294,45 @@ function countCellsFromData(data: RangeData) {
   return data.reduce((acc, row) => acc + Object.keys(row).length, 0);
 }
 
-export function pasteRange(range: RangeComponent) {
-  const text = ElectronPlugin.clipboard.readText();
-  if (!text) return;
+/**
+ * Read the clipboard and parse it as tab-separated rows. Returns `null` when
+ * the clipboard is empty. On a parse error the raw text is returned as a single
+ * cell so it can still be pasted into one row.
+ */
+export async function readClipboardRows(): Promise<string[][] | null> {
+  const text = await ElectronPlugin.clipboard.readText();
+  if (!text) return null;
 
-  const parsedText = Papa.parse(text, {
+  const parsed = Papa.parse(text, {
     header: false,
     delimiter: "\t",
   });
 
-  if (parsedText.errors.length > 0) {
-    const cell = range.getCells()[0][0];
-    setCellValue(cell, text);
+  if (parsed.errors.length > 0) {
+    return [[text]];
+  }
+
+  return parsed.data as string[][];
+}
+
+export async function pasteRange(range: RangeComponent) {
+  // Same parsing as "paste as new rows" — the two only differ in the
+  // destination (overwrite existing cells here vs. insert new rows there).
+  const data = await readClipboardRows();
+  if (!data) return;
+
+  if (data.length === 1 && data[0].length === 1) {
+    const singleValue = data[0][0];
+    const selectedRows = range.getRows();
+    const selectedColumns = range.getColumns()
+    const selectedCells: CellComponent[][] = selectedRows.map(row =>
+      row.getCells().filter(cell => selectedColumns.includes(cell.getColumn()))
+    );
+    selectedCells.forEach((row) => {
+      row.forEach((selectedCells) => {
+        setCellValue(selectedCells, singleValue);
+      });
+    });
   } else {
     const table = range.getRows()[0].getTable();
     const rows = table.getRows("active").slice(range.getTopEdge());
@@ -272,7 +350,7 @@ export function pasteRange(range: RangeComponent) {
       return arr;
     });
 
-    parsedText.data.forEach((row: string[], rowIdx) => {
+    data.forEach((row: string[], rowIdx) => {
       row.forEach((text, colIdx) => {
         const cell = cells[rowIdx]?.[colIdx];
         if (!cell) return;
@@ -289,16 +367,44 @@ export function setCellValue(cell: CellComponent, value: string) {
   if (editable) cell.setValue(value);
 }
 
+// Helper function to map column IDs to column titles
+function mapColumnIdsToTitles(data: RangeData, columns: ColumnComponent[]): RangeData {
+  if (!data || !data.length || !columns || !columns.length) return data;
+
+  const colIdToTitleMap = new Map();
+  columns.forEach(col => {
+    const field = col.getField();
+    if (field === rowHeaderField) return; // Skip row header
+    const title = col.getDefinition().title;
+    if (title) colIdToTitleMap.set(field, title);
+  });
+
+  return data.map(row => {
+    const newRow = {};
+    Object.entries(row).forEach(([key, value]) => {
+      const newKey = colIdToTitleMap.get(key) || key;
+      newRow[newKey] = value;
+    });
+    return newRow;
+  });
+}
+
 export function copyActionsMenu(options: {
   ranges: RangeComponent[];
   table?: string;
   schema?: string;
+  escapeString?: (s: string, quote?: boolean) => string;
 }) {
-  const { ranges, table, schema } = options;
-  return [
+  const { ranges, table, schema, escapeString } = options;
+  const columnCount = ranges[0].getColumns().length
+  const copyActions = [
     {
       label: createMenuItem("Copy", "Control+C"),
       action: () => copyRanges({ ranges, type: "plain" }),
+    },
+    {
+      label: createMenuItem("Copy Column Name"),
+      action: () => copyRanges({ ranges, type: "columnName" }),
     },
     {
       label: createMenuItem("Copy as TSV for Excel"),
@@ -323,13 +429,43 @@ export function copyActionsMenu(options: {
         }),
     },
   ];
+
+  if (columnCount === 1) {
+    copyActions.push({
+      label: createMenuItem("Copy for IN statement"),
+      action: () => copyRanges({ ranges, type: "asIn", table, schema, escapeString }),
+    })
+  }
+
+  return copyActions
 }
 
-export function pasteActionsMenu(range: RangeComponent) {
+export function copyCellMenu(_e: any, cell: CellComponent) {
+  const value = cell.getValue();
+  const text = value == null ? "" : String(value);
   return [
     {
-      label: createMenuItem("Paste", "Control+V"),
-      action: () => pasteRange(range),
+      label: createMenuItem("Copy"),
+      action: async () => await ElectronPlugin.clipboard.writeText(text),
     },
   ];
+}
+
+export function pasteActionsMenu(
+  range: RangeComponent,
+  onPasteAsNewRows?: () => void
+) {
+  const actions = [
+    {
+      label: createMenuItem("Paste", window.bksConfig.getKeybindings("context-menu", "general.pasteSelection")),
+      action: async () => await pasteRange(range),
+    },
+  ];
+  if (onPasteAsNewRows) {
+    actions.push({
+      label: createMenuItem("Paste as new rows", window.bksConfig.getKeybindings("context-menu", "tableTable.pasteAsNewRows")),
+      action: async () => onPasteAsNewRows(),
+    });
+  }
+  return actions;
 }

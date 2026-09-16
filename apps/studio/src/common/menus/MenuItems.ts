@@ -1,4 +1,5 @@
 import { IMenuActionHandler } from '@/common/interfaces/IMenuActionHandler';
+import { DevLicenseState } from '@/lib/license';
 import { IPlatformInfo } from '../IPlatformInfo';
 import { IGroupedUserSettings } from '../transport/TransportUserSetting';
 
@@ -21,43 +22,63 @@ export function menuItems(actionHandler: IMenuActionHandler, settings: IGroupedU
     undo: {
       id: 'undo',
       label: "Undo",
+      // Displayed only — the focused editor (CodeMirror, text inputs)
+      // handles the shortcut itself. Registering it would fire an extra
+      // webContents.undo() per keypress, undoing 2-3 steps at once.
       accelerator: "CommandOrControl+Z",
-      click: actionHandler.undo
+      click: actionHandler.undo,
+      registerAccelerator: false,
+      role: 'undo',
     },
     redo: {
       id: "redo",
       label: "Redo",
       accelerator: platformInfo.isWindows ? 'Ctrl+Y' : 'Shift+CommandOrControl+Z',
-      click: actionHandler.redo
+      click: actionHandler.redo,
+      registerAccelerator: false,
+      role: 'redo',
     },
     cut: {
       id: 'cut',
       label: 'Cut',
       accelerator: 'CommandOrControl+X',
       click: actionHandler.cut,
-      registerAccelerator: false
-
+      registerAccelerator: false,
+      role: 'cut',
     },
     copy: {
       id: 'copy',
       label: 'Copy',
       accelerator: 'CommandOrControl+C',
       click: actionHandler.copy,
-      registerAccelerator: false
+      registerAccelerator: false,
+      role: 'copy',
     },
     paste: {
       id: 'paste',
       label: 'Paste',
       accelerator: 'CommandOrControl+V',
       click: actionHandler.paste,
-      registerAccelerator: false
+      registerAccelerator: false,
+      role: 'paste',
+    },
+    pasteAsNewRows: {
+      id: 'paste-as-new-rows',
+      label: 'Paste as new rows',
+      // Displayed only — the shortcut is handled by the table grid's own
+      // keymap so it stays scoped to the table and doesn't fire elsewhere
+      // (e.g. plain-text paste in the query editor).
+      accelerator: 'CommandOrControl+Shift+V',
+      registerAccelerator: false,
+      click: actionHandler.pasteAsNewRows,
     },
 
     selectAll: {
       id: 'select-all',
       label: 'Select All',
       accelerator: 'CommandOrControl+A',
-      click: actionHandler.selectAll
+      click: actionHandler.selectAll,
+      role: 'selectAll',
     },
     // view
     zoomreset: {
@@ -72,29 +93,66 @@ export function menuItems(actionHandler: IMenuActionHandler, settings: IGroupedU
       accelerator: 'CommandOrControl+=',
       click: actionHandler.zoomin
     },
+    zoominNumpad: {
+      id: 'zoom-in-numpad',
+      label: "Zoom In (numpad)",
+      accelerator: 'CommandOrControl+numadd',
+      click: actionHandler.zoomin,
+      visible: false,
+    },
     zoomout: {
       id: 'zoom-out',
       label: "Zoom Out",
       accelerator: "CommandOrControl+-",
       click: actionHandler.zoomout
     },
+    zoomoutNumpad: {
+      id: 'zoom-out-numpad',
+      label: "Zoom Out (numpad)",
+      accelerator: "CommandOrControl+numsub",
+      click: actionHandler.zoomout,
+      visible: false,
+    },
+    editorFontSizeReset: {
+      id: 'editor-font-size-reset',
+      label: "Reset Editor Font Size",
+      click: actionHandler.editorFontSizeReset
+    },
+    editorFontSizeIncrease: {
+      id: 'editor-font-size-increase',
+      label: "Increase Editor Font Size",
+      accelerator: platformInfo.isMac ? "Command+Shift+." : "Ctrl+Shift+.",
+      click: actionHandler.editorFontSizeIncrease
+    },
+    editorFontSizeDecrease: {
+      id: 'editor-font-size-decrease',
+      label: "Decrease Editor Font Size",
+      accelerator: platformInfo.isMac ? "Command+Shift+," : "Ctrl+Shift+,",
+      click: actionHandler.editorFontSizeDecrease
+    },
     fullscreen: {
       id: 'fullscreen',
       label: "Toggle Full Screen",
-      accelerator: platformInfo.isMac ? 'Shift+CommandOrControl+F' : 'F11',
+      accelerator: platformInfo.isMac ? 'Command+Control+F' : 'F11',
       click: actionHandler.fullscreen
     },
     // help
     about: {
       id: 'about',
       label: 'About Beekeeper Studio',
-      click: actionHandler.about
+      click: actionHandler.about,
+      role: 'about',
     },
     devtools: {
       id: 'dev-tools',
       label: "Show Developer Tools",
       nonNativeMacOSRole: true,
       click: actionHandler.devtools
+    },
+    restart: {
+      id: 'restart',
+      label: "Restart Beekeeper",
+      click: actionHandler.restart
     },
     checkForUpdate: {
       id: 'updatecheck',
@@ -103,12 +161,22 @@ export function menuItems(actionHandler: IMenuActionHandler, settings: IGroupedU
     },
     opendocs : {
       id: 'opendocs',
-      label: 'Documentation and Support',
+      label: 'Documentation',
       click: actionHandler.opendocs
+    },
+    support: {
+      id: 'contactSupport',
+      label: 'Contact Support',
+      click: actionHandler.contactSupport
+    },
+    gettingStartedGuide: {
+      id: 'gettingStartedGuide',
+      label: 'Getting Started Guide',
+      click: actionHandler.openGettingStarted
     },
     reload: {
       id: 'reload-window',
-      label: "DEV Force Reload",
+      label: "Reload Window",
       accelerator: "CommandOrControl+Shift+R",
       click: actionHandler.reload
     },
@@ -128,58 +196,64 @@ export function menuItems(actionHandler: IMenuActionHandler, settings: IGroupedU
       label: "New Tab",
       accelerator: "CommandOrControl+T",
       click: actionHandler.newQuery,
+      enabled: false,
     },
     closeTab: {
       id: 'close-tab',
       label: "Close Tab",
       accelerator: "CommandOrControl+W",
       click: actionHandler.closeTab,
-      registerAccelerator: false
+      registerAccelerator: false,
+      enabled: false,
     },
     importSqlFiles: {
       id: 'import-sql-files',
-      label: "Import SQL Files",
+      label: "Import Saved Queries",
       accelerator: "CommandOrControl+I",
       click: actionHandler.importSqlFiles,
       showWhenConnected: true,
+      enabled: false,
+    },
+    importConnectionFiles: {
+      id: 'import-connection-files',
+      label: "Import Saved Connections",
+      click: actionHandler.importConnectionFiles,
+      enabled: true
     },
     quickSearch: {
       id: 'go-to',
       label: "Quick Search",
       accelerator: "CommandOrControl+P",
       registerAccelerator: false,
-      click: actionHandler.quickSearch
+      click: actionHandler.quickSearch,
+      enabled: false,
     },
     disconnect: {
       id: 'disconnect',
       label: "Disconnect",
-      click: actionHandler.disconnect
+      accelerator: "Shift+CommandOrControl+Q",
+      click: actionHandler.disconnect,
+      enabled: false,
     },
-    sidebarToggle: {
+    primarySidebarToggle: {
       id: 'menu-toggle-sidebar',
-      label: 'Toggle Sidebar',
-      accelerator: "Alt+S",
-      click: actionHandler.toggleSidebar,
+      label: 'Toggle Primary Sidebar',
+      accelerator: platformInfo.isMac? "CommandOrControl+B" : "Alt+S",
+      click: actionHandler.togglePrimarySidebar,
+      enabled: false,
     },
-    menuStyleToggle: {
-      id: 'menu-style-toggle-menu',
-      label: "Menu Style",
-      submenu: [
-        {
-          id: "ms-native",
-          type: 'radio',
-          label: 'Native',
-          click: actionHandler.switchMenuStyle,
-          checked: settings.menuStyle.value === 'native'
-        },
-        {
-          id: "ms-client",
-          type: 'radio',
-          label: 'Client',
-          click: actionHandler.switchMenuStyle,
-          checked: settings.menuStyle.value === 'client'
-        }
-      ]
+    secondarySidebarToggle: {
+      id: 'menu-secondary-sidebar',
+      label: 'Toggle Secondary Sidebar',
+      // accelerator: "Alt+S",
+      click: actionHandler.toggleSecondarySidebar,
+      enabled: false,
+    },
+    privacyModeToggle: {
+      id: 'privacy-mode-toggle',
+      label: 'Toggle Privacy Mode',
+      click: actionHandler.togglePrivacyMode,
+      checked: settings?.privacyMode?.value
     },
     themeToggle: {
       id: "theme-toggle-menu",
@@ -189,59 +263,148 @@ export function menuItems(actionHandler: IMenuActionHandler, settings: IGroupedU
           type: 'radio',
           label: "System",
           click: actionHandler.switchTheme,
-          checked: settings.theme.value === 'system'
+          checked: settings?.theme?.value === 'system'
         },
         {
           type: "radio",
           label: "Light",
           click: actionHandler.switchTheme,
-          checked: settings.theme.value === 'light'
+          checked: settings?.theme?.value === 'light'
         },
         {
           type: 'radio',
           label: "Dark",
           click: actionHandler.switchTheme,
-          checked: settings.theme.value === 'dark'
+          checked: settings?.theme?.value === 'dark'
         },
         {
           type: 'radio',
           label: 'Solarized',
           click: actionHandler.switchTheme,
-          checked: settings.theme.value === 'solarized'
+          checked: settings?.theme?.value === 'solarized'
         },
         {
           type: 'radio',
           label: 'Solarized Dark',
           click: actionHandler.switchTheme,
-          checked: settings.theme.value === 'solarized-dark'
+          checked: settings?.theme?.value === 'solarized-dark'
         }
       ]
     },
     enterLicense: {
       id: 'enter-license',
-      label: "Enter License Key",
+      label: "Manage License Keys",
       click: actionHandler.enterLicense,
 
     },
     backupDatabase: {
       id: 'backup-database',
       label: "Create a Database Backup",
-      click: actionHandler.backupDatabase
+      click: actionHandler.backupDatabase,
+      enabled: false,
     },
     restoreDatabase: {
       id: 'restore-database',
       label: "Restore a Database Backup",
-      click: actionHandler.restoreDatabase
+      click: actionHandler.restoreDatabase,
+      enabled: false,
     },
     exportTables: {
       id: 'export-tables',
       label: 'Export Data',
-      click: actionHandler.exportTables
+      click: actionHandler.exportTables,
+      enabled: false,
+    },
+    updatePin: {
+      id: 'update-pin',
+      label: 'Update Pin',
+      click: actionHandler.updatePin,
     },
     minimalModeToggle: {
       id: "minimal-mode-toggle",
       label: "Toggle Minimal Mode",
       click: actionHandler.toggleMinimalMode,
+    },
+    simulatePlatform: {
+      id: "simulate-platform",
+      label: "DEV Simulate Platform",
+      submenu: [
+        {
+          type: 'radio',
+          label: "None (use real platform)",
+          checked: true,
+          click: (item, win) => actionHandler.simulatePlatform(item, win, 'none'),
+        },
+        {
+          type: 'radio',
+          label: "Snap",
+          click: (item, win) => actionHandler.simulatePlatform(item, win, 'snap'),
+        },
+        {
+          type: 'radio',
+          label: "Flatpak",
+          click: (item, win) => actionHandler.simulatePlatform(item, win, 'flatpak'),
+        },
+      ],
+    },
+    licenseState: {
+      id: "license-state",
+      label: "DEV Switch License State",
+      submenu: [
+        { label: ">>> BEWARE: ALL LICENSES WILL BE LOST! <<<" },
+        {
+          label: "First time install, no license, no trial.",
+          click: (item, win) => actionHandler.switchLicenseState(item, win, DevLicenseState.firstInstall),
+        },
+        {
+          label: "On a trial license",
+          click: (item, win) => actionHandler.switchLicenseState(item, win, DevLicenseState.onTrial),
+        },
+        {
+          label: "Trial expired",
+          click: (item, win) => actionHandler.switchLicenseState(item, win, DevLicenseState.trialExpired),
+        },
+        {
+          label: "On an active paid license",
+          click: (item, win) => actionHandler.switchLicenseState(item, win, DevLicenseState.activePaidLicense),
+        },
+        {
+          label: "On an expired, lifetime license, that covers this version",
+          click: (item, win) => actionHandler.switchLicenseState(item, win, DevLicenseState.expiredLifetimeCoversThisVersion),
+        },
+        {
+          label: "On an expired, lifetime license, that covers an earlier version",
+          click: (item, win) => actionHandler.switchLicenseState(item, win, DevLicenseState.expiredLifetimeCoversEarlierVersion),
+        },
+      ],
+    },
+    toggleBeta: {
+      id: "toggle-beta",
+      label: "Release Channel",
+      submenu: [
+        {
+          type: 'radio',
+          label: 'Stable',
+          click: actionHandler.toggleBeta,
+          checked: settings?.useBeta?.value == false
+        },
+        {
+          type: 'radio',
+          label: 'Beta',
+          click: actionHandler.toggleBeta,
+          checked: settings?.useBeta?.value == true
+        }
+      ]
+    },
+    managePlugins: {
+      id: 'manage-plugins',
+      label: 'Manage Plugins',
+      click: actionHandler.managePlugins,
+    },
+    keyboardShortcuts: {
+      id: 'keyboard-shortcuts',
+      label: 'Keyboard Shortcuts',
+      click: actionHandler.keyboardShortcuts,
     },
   }
 }

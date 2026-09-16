@@ -63,7 +63,7 @@
     >
       <span
         class="sub-item"
-        v-if="!loadingColumns && !(table.columns || table.columns.length)"
+        v-if="!loadingColumns && !(table.columns || table.columns?.length)"
       >
         No Columns
       </span>
@@ -72,6 +72,7 @@
           :key="c.columnName"
           v-for="(c, i) in table.columns"
           class="sub-item"
+          @contextmenu.prevent.stop="openColumnMenu(c, $event)"
         >
           <span
             class="title truncate"
@@ -187,6 +188,21 @@ export default Vue.extend({
     },
     selectColumn(i) {
       this.selectChildren(this.$refs.title[i]);
+    },
+    openColumnMenu(column, event) {
+      this.$bks.openMenu({
+        event,
+        item: column,
+        options: [
+          {
+            name: "Copy Name",
+            slug: 'copy-name',
+            handler: ({ item }) => {
+              this.$copyText(item.columnName)
+            }
+          },
+        ]
+      })
     },
     openTable() {
       if (this.clickState.openClicks > 0) {

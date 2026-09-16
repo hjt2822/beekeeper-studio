@@ -17,7 +17,7 @@
           :key="tab.id"
           :tab="tab"
           :tabs-count="tabItems.length"
-          :selected="activeTab === tab"
+          :selected="activeTab?.id === tab.id"
           @click="click"
           @close="close"
           @closeAll="closeAll"
@@ -25,54 +25,97 @@
           @closeToRight="closeToRight"
           @forceClose="forceClose"
           @duplicate="duplicate"
+          @copyName="copyName"
         />
       </Draggable>
       <!-- </div> -->
-      <span class="actions expand">
+      <span class="actions add-tab-group" id="add-tab-group">
         <a
           @click.prevent="createQuery(null)"
           class="btn-fab add-query"
-        ><i class=" material-icons">add_circle</i></a>
+        ><i class=" material-icons">add</i></a>
+        <x-button
+          class="btn-fab add-tab-dropdown"
+          menu
+          v-if="newTabDropdownItems.length > 1"
+        >
+          <i class="material-icons">arrow_drop_down</i>
+          <x-menu>
+            <template v-for="(menuItem, index) in newTabDropdownItems">
+              <x-menuitem
+                :key="index"
+                @click.prevent="createTab(menuItem.config)"
+              >
+                <x-label>
+                  <i class="material-icons">{{ menuItem.config.icon }}</i>
+                  {{ menuItem.label }}
+                </x-label>
+                <x-shortcut v-if="menuItem.shortcut" :value="menuItem.shortcut" />
+              </x-menuitem>
+            </template>
+          </x-menu>
+        </x-button>
       </span>
       <a
         @click.prevent="showUpgradeModal"
         class="btn btn-brand btn-icon btn-upgrade"
-        v-tooltip="'Upgrade for: backup/restore, import from CSV, larger query results, and more!'"
+        v-tooltip="'Upgrade for: backup/restore, import from file, larger query results, and more!'"
+        v-if="$store.getters.isCommunity"
       >
         <i class="material-icons">stars</i> Upgrade
       </a>
     </div>
+    <x-progressbar v-if="activeTab?.isLoading" />
     <div class="tab-content">
-      <div class="empty flex-col  expand">
+      <div class="empty-editor-group empty flex-col  expand">
         <div class="expand layout-center">
-          <shortcut-hints />
+          <shortcut-hints type="core-tabs" />
         </div>
-        <statusbar class="tabulator-footer" />
       </div>
       <div
         v-for="(tab, idx) in tabItems"
         class="tab-pane"
         :id="'tab-' + idx"
         :key="tab.id"
-        :class="{active: (activeTab === tab)}"
-        v-show="activeTab === tab"
+        :class="{active: (activeTab?.id === tab.id)}"
+        v-show="activeTab?.id === tab.id"
       >
         <QueryEditor
           v-if="tab.tabType === 'query'"
-          :active="activeTab === tab"
+          :active="activeTab?.id === tab.id"
           :tab="tab"
           :tab-id="tab.id"
+          @update-tab="updateTab"
+        />
+        <Shell
+          v-if="tab.tabType === 'shell'"
+          :active="activeTab?.id === tab.id"
+          :tab="tab"
+          :tab-id="tab.id"
+        />
+        <PluginBase
+          v-if="tab.tabType === 'plugin-base'"
+          :tab="tab"
+          :active="activeTab.id === tab.id"
+          @close="close"
+        />
+        <PluginShell
+          v-if="tab.tabType === 'plugin-shell'"
+          :tab="tab"
+          :active="activeTab.id === tab.id"
+          @close="close"
         />
         <tab-with-table
           v-if="tab.tabType === 'table'"
           :tab="tab"
           @close="close"
         >
-          <template v-slot:default="slotProps">
+          <template #default="slotProps">
             <TableTable
               :tab="tab"
-              :active="activeTab === tab"
+              :active="activeTab?.id === tab.id"
               :table="slotProps.table"
+              @update-tab="updateTab"
             />
           </template>
         </tab-with-table>
@@ -81,9 +124,9 @@
           :tab="tab"
           @close="close"
         >
-          <template v-slot:default="slotProps">
+          <template #default="slotProps">
             <TableProperties
-              :active="activeTab === tab"
+              :active="activeTab?.id === tab.id"
               :tab="tab"
               :tab-id="tab.id"
               :table="slotProps.table"
@@ -92,7 +135,7 @@
         </tab-with-table>
         <TableBuilder
           v-if="tab.tabType === 'table-builder'"
-          :active="activeTab === tab"
+          :active="activeTab?.id === tab.id"
           :tab="tab"
           :tab-id="tab.id"
         />
@@ -100,13 +143,14 @@
           v-if="tab.tabType === 'import-export-database'"
           :schema="tab.schemaName"
           :tab="tab"
+          :active="activeTab?.id === tab.id"
           @close="close"
         />
         <DatabaseBackup
           v-if="tab.tabType === 'backup'"
           :connection="connection"
           :is-restore="false"
-          :active="activeTab === tab"
+          :active="activeTab?.id === tab.id"
           :tab="tab"
           @close="close"
         />
@@ -114,7 +158,7 @@
           v-if="tab.tabType === 'restore'"
           :connection="connection"
           :is-restore="true"
-          :active="activeTab === tab"
+          :active="activeTab?.id === tab.id"
           :tab="tab"
           @close="close"
         />
@@ -123,6 +167,7 @@
           :tab="tab"
           :schema="tab.schemaName"
           :table="tab.tableName"
+          :active="activeTab?.id === tab.id"
           :connection="connection"
           @close="close"
         />
@@ -228,7 +273,7 @@
     </portal>
 
     <confirmation-modal :id="confirmModalId">
-      <template v-slot:title>
+      <template #title>
         Really close
         <span
           class="tab-like"
@@ -238,12 +283,13 @@
         </span>
         ?
       </template>
-      <template v-slot:message>
+      <template #message>
         You will lose unsaved changes
       </template>
     </confirmation-modal>
 
-    <sql-files-import-modal @submit="importSqlFiles" />
+    <sql-files-import-modal />
+    <create-collection-modal />
   </div>
 </template>
 
@@ -260,11 +306,13 @@ import TableBuilder from './TabTableBuilder.vue'
 import ImportExportDatabase from './importexportdatabase/ImportExportDatabase.vue'
 import ImportTable from './TabImportTable.vue'
 import DatabaseBackup from './TabDatabaseBackup.vue'
+import PluginShell from './TabPluginShell.vue'
+import PluginBase from './TabPluginBase.vue'
 import { AppEvent } from '../common/AppEvent'
 import { mapGetters, mapState } from 'vuex'
 import Draggable from 'vuedraggable'
 import ShortcutHints from './editor/ShortcutHints.vue'
-import { FormatterDialect, DialectTitles } from '@shared/lib/dialects/models'
+import { FormatterDialect } from '@shared/lib/dialects/models'
 import Vue from 'vue';
 import { CloseTabOptions } from '@/common/appdb/models/CloseTab';
 import TabWithTable from './common/TabWithTable.vue';
@@ -275,56 +323,73 @@ import { DropzoneDropEvent } from '@/common/dropzone'
 import { readWebFile } from '@/common/utils'
 import Noty from 'noty'
 import ConfirmationModal from './common/modals/ConfirmationModal.vue'
+import CreateCollectionModal from './common/modals/CreateCollectionModal.vue'
 import SqlFilesImportModal from '@/components/common/modals/SqlFilesImportModal.vue'
-import DetailViewSidebar from '@/components/sidebar/DetailViewSidebar.vue'
+import Shell from './TabShell.vue'
 
 import { safeSqlFormat as safeFormat } from '@/common/utils';
-import { TransportOpenTab, setFilters, matches, duplicate } from '@/common/transport/TransportOpenTab'
+import { TabTypeConfig, TransportOpenTab, TransportPluginTab, setFilters, matches, duplicate } from '@/common/transport/TransportOpenTab'
+import { wait } from '@/shared/lib/wait'
 
-  export default Vue.extend({
-    props: [],
-    components: {
-      Statusbar,
-      QueryEditor,
-      CoreTabHeader,
-      TableTable,
-      TableProperties,
-      ImportExportDatabase,
-      ImportTable,
-      Draggable,
-      ShortcutHints,
-      TableBuilder,
-      TabWithTable,
-      TabIcon,
-      DatabaseBackup,
-      PendingChangesButton,
+export default Vue.extend({
+  props: [],
+  components: {
+    Statusbar,
+    QueryEditor,
+    CoreTabHeader,
+    TableTable,
+    TableProperties,
+    ImportExportDatabase,
+    ImportTable,
+    Draggable,
+    ShortcutHints,
+    TableBuilder,
+    TabWithTable,
+    TabIcon,
+    DatabaseBackup,
+    PendingChangesButton,
     ConfirmationModal,
     SqlFilesImportModal,
-    DetailViewSidebar,
-    },
-    data() {
-      return {
-        showExportModal: false,
-        tableExportOptions: null,
-        dragOptions: {
-          handle: '.nav-item'
-        },
-        // below are connected to the modal for delete/truncate
-        sureOpen: false,
-        lastFocused: null,
-        dbAction: null,
-        dbElement: null,
-        dbEntityType: null,
-        dbDeleteElementParams: null,
-        // below are connected to the modal for duplicate
-        dbDuplicateTableParams: null,
-        duplicateTableName: null,
-        closingTab: null,
-        confirmModalId: 'core-tabs-close-confirmation',
+    CreateCollectionModal,
+    Shell,
+    PluginShell,
+    PluginBase,
+  },
+  data() {
+    return {
+      showExportModal: false,
+      tableExportOptions: null,
+      dragOptions: {
+        handle: '.nav-item'
+      },
+      // below are connected to the modal for delete/truncate
+      sureOpen: false,
+      lastFocused: null,
+      dbAction: null,
+      dbElement: null,
+      dbEntityType: null,
+      dbDeleteElementParams: null,
+      // below are connected to the modal for duplicate
+      dbDuplicateTableParams: null,
+      duplicateTableName: null,
+      closingTab: null,
+      confirmModalId: 'core-tabs-close-confirmation',
+    }
+  },
+  watch: {
+    // immediate: usedConfig is committed before the interface flips to
+    // connected, so it is already set when this component mounts
+    usedConfig: {
+      immediate: true,
+      async handler() {
+        if (!this.usedConfig) return
+        await this.$store.dispatch('tabs/load')
+        if (!this.tabItems?.length) {
+          await this.createQuery()
+        }
+        wait(800).then(() => this.$tour.start("connectedScreen"));
       }
-    },
-    watch: {
-
+    }
   },
   filters: {
     titleCase: function (value) {
@@ -334,9 +399,16 @@ import { TransportOpenTab, setFilters, matches, duplicate } from '@/common/trans
     }
   },
   computed: {
+    ...mapState(['selectedSidebarItem']),
     ...mapState('tabs', { 'activeTab': 'active', 'tabs': 'tabs' }),
-    ...mapState(['connection']),
-    ...mapGetters({ 'menuStyle': 'settings/menuStyle', 'dialect': 'dialect', 'dialectData': 'dialectData', 'dialectTitle': 'dialectTitle' }),
+    ...mapState(['connection', 'connectionType', 'usedConfig']),
+    ...mapGetters({
+       'dialect': 'dialect',
+       'dialectData': 'dialectData',
+       'dialectTitle': 'dialectTitle',
+       'newTabDropdownItems': 'tabs/newTabDropdownItems',
+       'getKeybindings': 'plugins/keybindings/getKeybindings',
+    }),
     tabIcon() {
       return {
         type: this.dbEntityType,
@@ -366,12 +438,15 @@ import { TransportOpenTab, setFilters, matches, duplicate } from '@/common/trans
         { event: AppEvent.closeTab, handler: this.closeCurrentTab },
         { event: AppEvent.closeAllTabs, handler: this.closeAll },
         { event: AppEvent.newTab, handler: this.createQuery },
+        { event: AppEvent.newCustomTab, handler: this.addTab },
         { event: AppEvent.createTable, handler: this.openTableBuilder },
+        { event: AppEvent.createTableFromFile, handler: this.beginImport },
         { event: 'historyClick', handler: this.createQueryFromItem },
         { event: AppEvent.loadTable, handler: this.openTable },
         { event: AppEvent.openTableProperties, handler: this.openTableProperties },
         { event: 'loadSettings', handler: this.openSettings },
         { event: 'loadTableCreate', handler: this.loadTableCreate },
+        { event: AppEvent.loadSelectTop, handler: this.loadSelectTop },
         { event: 'loadRoutineCreate', handler: this.loadRoutineCreate },
         { event: 'favoriteClick', handler: this.favoriteClick },
         { event: 'exportTable', handler: this.openExportModal },
@@ -386,6 +461,8 @@ import { TransportOpenTab, setFilters, matches, duplicate } from '@/common/trans
         { event: AppEvent.backupDatabase, handler: this.backupDatabase },
         { event: AppEvent.beginImport, handler: this.beginImport },
         { event: AppEvent.restoreDatabase, handler: this.restoreDatabase },
+        { event: AppEvent.switchUserKeymap, handler: this.switchUserKeymap },
+        { event: AppEvent.pasteAsNewRows, handler: this.pasteAsNewRowsWrongTabCheck },
       ]
     },
     lastTab() {
@@ -398,24 +475,24 @@ import { TransportOpenTab, setFilters, matches, duplicate } from '@/common/trans
       return _.indexOf(this.tabItems, this.activeTab)
     },
     keymap() {
-      const result = {
-        'ctrl+shift+T': this.reopenLastClosedTab,
-        'ctrl+tab': this.nextTab,
-        'ctrl+shift+tab': this.previousTab,
-        'alt+1': this.handleAltNumberKeyPress,
-        'alt+2': this.handleAltNumberKeyPress,
-        'alt+3': this.handleAltNumberKeyPress,
-        'alt+4': this.handleAltNumberKeyPress,
-        'alt+5': this.handleAltNumberKeyPress,
-        'alt+6': this.handleAltNumberKeyPress,
-        'alt+7': this.handleAltNumberKeyPress,
-        'alt+8': this.handleAltNumberKeyPress,
-        'alt+9': this.handleAltNumberKeyPress,
-      }
-
+      const result = this.$vHotkeyKeymap({
+        'tab.nextTab': this.nextTab,
+        'tab.previousTab': this.previousTab,
+        'tab.reopenLastClosedTab': this.reopenLastClosedTab,
+        'tab.switchTab1': this.handleSwitchTab.bind(this, 0),
+        'tab.switchTab2': this.handleSwitchTab.bind(this, 1),
+        'tab.switchTab3': this.handleSwitchTab.bind(this, 2),
+        'tab.switchTab4': this.handleSwitchTab.bind(this, 3),
+        'tab.switchTab5': this.handleSwitchTab.bind(this, 4),
+        'tab.switchTab6': this.handleSwitchTab.bind(this, 5),
+        'tab.switchTab7': this.handleSwitchTab.bind(this, 6),
+        'tab.switchTab8': this.handleSwitchTab.bind(this, 7),
+        'tab.switchTab9': this.handleSwitchTab.bind(this, 8),
+        ...this.getKeybindings("newTabDropdown"),
+      })
+      // FIXME (azmi): move this to default config file
       if(this.$config.isMac) {
-         result['shift+meta+['] = this.previousTab
-         result['shift+meta+]'] = this.nextTab
+        result['meta+shift+t'] = this.reopenLastClosedTab
       }
 
       return result
@@ -425,6 +502,10 @@ import { TransportOpenTab, setFilters, matches, duplicate } from '@/common/trans
     this.$root.$refs.CoreTabs = this;
   },
   methods: {
+    async updateTab(tab: TransportOpenTab) {
+      const newTab = Object.assign({}, tab);
+      await this.$store.commit('tabs/replaceTab', newTab);
+    },
     showUpgradeModal() {
       this.$root.$emit(AppEvent.upgradeModal)
     },
@@ -455,7 +536,20 @@ import { TransportOpenTab, setFilters, matches, duplicate } from '@/common/trans
           this.$noty.success(`${this.dbAction} completed successfully`)
 
         } catch (ex) {
-          this.$noty.error(`Error performing ${this.dbAction}: ${ex.message}`)
+          const notificationMessage = [
+            `Error performing ${this.dbAction}: ${ex.message}`,
+            ex.detail && `DETAIL: ${ex.detail}`,
+            ex.hint && `HINT: ${ex.hint}`,
+          ].filter(Boolean).join('\n')
+
+          this.$noty.error(notificationMessage, {
+            timeout: 3500,
+            callbacks: {
+              onClick: async () => {
+                await this.$native.clipboard.writeText(notificationMessage)
+              },
+            },
+          })
         }
       })
     },
@@ -560,11 +654,15 @@ import { TransportOpenTab, setFilters, matches, duplicate } from '@/common/trans
         this.lastFocused.focus()
       }
     },
-    openContextMenu(event, item) {
-      this.contextEvent = { event, item }
-    },
-    async setActiveTab(tab) {
+    async setActiveTab(tab: TransportOpenTab) {
+      const switchingTab = tab.id !== this.activeTab?.id
+      if (switchingTab) {
+        this.trigger(AppEvent.switchingTab, tab)
+      }
       await this.$store.dispatch('tabs/setActive', tab)
+      if (switchingTab) {
+        this.trigger(AppEvent.switchedTab, tab)
+      }
     },
     async addTab(item: TransportOpenTab) {
       const savedItem = await this.$store.dispatch('tabs/add', { item, endOfPosition: true })
@@ -591,28 +689,81 @@ import { TransportOpenTab, setFilters, matches, duplicate } from '@/common/trans
     closeCurrentTab(_id?:number, options?: CloseTabOptions) {
       if (this.activeTab) this.close(this.activeTab, options)
     },
-    handleCreateTab() {
-      this.createQuery()
+    async createTab(config: TabTypeConfig.Config) {
+      if (config.type === "query") {
+        this.createQuery()
+      } else if (config.type === "shell") {
+        this.createShell()
+      } else if (config.type === "plugin-shell" || config.type === "plugin-base") {
+        let tNum = 0;
+        let title = config.name;
+        do {
+          tNum = tNum + 1;
+          title = `${config.name} #${tNum}`;
+        } while (this.tabItems.filter((t) => t.title === title).length > 0);
+
+        const tab = {
+          tabType: config.type,
+          title,
+          unsavedChanges: false,
+          context: {
+            pluginId: config.pluginId,
+            pluginTabTypeId: config.pluginTabTypeId,
+            command: config.menuItem?.command,
+            params: config.menuItem?.params,
+          },
+        } as TransportPluginTab;
+        await this.addTab(tab)
+      }
     },
-    createQuery(optionalText, queryTitle?) {
-      // const text = optionalText ? optionalText : ""
-      console.log("Creating tab")
-      let qNum = 0
-      let tabName = "New Query"
+    async createShell() {
+      let sNum = 0;
+      let tabName = "Shell";
       do {
-        qNum = qNum + 1
-        tabName = `Query #${qNum}`
+        sNum = sNum + 1;
+        tabName = `Shell #${sNum}`;
       } while (this.tabItems.filter((t) => t.title === tabName).length > 0);
+
+      const result = {} as TransportOpenTab;
+      result.tabType = 'shell';
+      result.title = tabName;
+      result.unsavedChanges = false;
+      await this.addTab(result);
+    },
+    getNextQueryTitle(queryTitle?) {
+      let qNum = 0;
+      let tabName = "New Query";
       if (queryTitle) {
         tabName = queryTitle
+      } else {
+        do {
+          qNum = qNum + 1;
+          tabName = `Query #${qNum}`;
+        } while (this.tabItems.filter((t) => t.title === tabName).length > 0);
       }
 
-        const result = {} as TransportOpenTab;
-        result.tabType = 'query'
-        result.title = tabName,
-        result.unsavedChanges = false
-        result.unsavedQueryText = optionalText
-        this.addTab(result)
+      return tabName;
+    },
+    async createQuery(optionalText, queryTitle?) {
+      // const text = optionalText ? optionalText : ""
+      console.log("Creating tab")
+      const tabName = this.getNextQueryTitle(queryTitle);
+
+      const result = {} as TransportOpenTab;
+      result.tabType = 'query'
+      result.title = tabName,
+      result.unsavedChanges = false
+      result.unsavedQueryText = optionalText
+      await this.addTab(result)
+    },
+    async loadSelectTop(table) {
+      try {
+        const query = await this.connection.selectTopSql(table.name, 0, 100, [], [], table.schema, ['*'])
+        this.createQuery(query.replace(/\s+/g, ' ').trim())
+      } catch (ex) {
+        this.$noty.error(`An error occured while loading the SQL for '${table.name}' - ${ex.message}`)
+        throw ex
+      }
     },
     async loadTableCreate(table) {
       let method = null
@@ -658,16 +809,23 @@ import { TransportOpenTab, setFilters, matches, duplicate } from '@/common/trans
       if (existing) return this.$store.dispatch('tabs/setActive', existing);
       this.addTab(t);
     },
-    beginImport({ table }) {
-      if (table.entityType !== 'table') {
+    beginImport(data = {}) {
+      const { table } = data
+      if (table && table.entityType !== 'table') {
         this.$noty.error("You can only import data into a table")
         return;
       }
+      if (this.$store.getters.isCommunity) {
+        this.$root.$emit(AppEvent.upgradeModal, 'Import From File')
+        return;
+      }
       const t = { tabType: 'import-table' }
-      t.title = `Import Table: ${table.name}`
+      t.title = table ? `Import Table: ${table.name}` : 'Create Table and Import Data'
       t.unsavedChanges = false
-      t.schemaName = table.schema
-      t.tableName = table.name
+      if (table) {
+        t.schemaName = table.schema
+        t.tableName = table.name
+      }
       const existing = this.tabItems.find(tab => matches(tab, t))
       if (existing) return this.$store.dispatch('tabs/setActive', existing)
       this.addTab(t)
@@ -701,8 +859,8 @@ import { TransportOpenTab, setFilters, matches, duplicate } from '@/common/trans
         error: false,
       }))
 
-      if (!files.every(({ file }) => file.name.endsWith('.sql'))) {
-        this.$noty.error('Only .sql files are supported')
+      if (!files.every(({ file }) => /\.(sql|txt)$/i.test(file.name))) {
+        this.$noty.error('Only .sql and .txt files are supported')
         return
       }
 
@@ -767,90 +925,29 @@ import { TransportOpenTab, setFilters, matches, duplicate } from '@/common/trans
 
       noty.close()
     },
-    async importSqlFiles(paths: string[]) {
-      const files = paths.map((path) => ({
-        path,
-        name: path.replace(/^.*[\\/]/, '').replace(/\.sql$/, ''),
-        error: false,
-      }))
-
-      let readerAbort: () => void;
-      let aborted  = false;
-
-      function abort() {
-        if (typeof readerAbort === 'function') {
-          readerAbort()
-        }
-        aborted = true
-      }
-
-      const notyQueue = 'load-queries'
-      const notyText = `Loading <span class="counter">1</span> of ${files.length} files`
-
-      const noty = this.$noty.info(notyText,  {
-        queue: notyQueue,
-        allowRawHtml: true,
-        buttons: [
-          Noty.button('Abort', 'btn btn-danger', abort)
-        ],
-      })
-
-      const counter = noty.barDom.querySelector('.counter')
-
-      for (let i = 0; i < files.length; i++) {
-        if (aborted) {
-          break
-        }
-
-        const file = files[i]
-
-        counter.textContent = `${i + 1}`
-
-        try {
-          // TODO (azmi): this process can take longer by accident. Consider
-          // an ability to cancel reading file.
-          const text = await this.$util.send('file/read', { path: file.path, options: { encoding: 'utf8', flag: 'r' }})
-          if (text) {
-            const query = await this.$util.send('appdb/query/new');
-            query.title = file.name
-            query.text = text
-            await this.$store.dispatch('data/queries/save', query)
-          } else {
-            files[i].error = true
-          }
-        } catch (e) {
-            files[i].error = true
-        }
-      }
-
-      if (aborted) {
-        this.$noty.info('Loading aborted', { killer: notyQueue })
-      } else if (files.some(({ error }) => error)) {
-        this.$noty.error('Some files could not be loaded', { killer: notyQueue })
-      } else {
-        this.$noty.success('All files loaded', { killer: notyQueue })
-      }
-    },
     async handlePromptQueryExport(query) {
-      const safeFilename = query.title.replace(/[/\\?%*:|"<>]/g, '_')
+      const safeFilename = query.title.replace(/[/\\?%*:|"<>]/g, '_');
+      const fileName = `${safeFilename}.sql`;
 
-      const filePath = this.$native.dialog.showSaveDialogSync({
-        title: "Export Query",
-        defaultPath: await window.main.getLastExportPath(`${safeFilename}.sql`),
-        filters: [
-          { name: 'SQL (*.sql)', extensions: ['sql'] },
-          { name: 'All Files (*.*)', extensions: ['*'] },
-        ],
-      })
-
-      // do nothing if canceled
-      if (!filePath) return
+      const lastExportPath = await Vue.prototype.$settings.get("lastExportPath", await window.main.defaultExportPath(fileName));
 
       const notyQueue = 'export-query'
       this.$noty.info('Exporting query',  { queue: notyQueue })
 
+      const fullQuery = await this.$store.dispatch('data/queries/findOne', query.id);
+
       try {
-        await this.$util.send('file/write', { path: filePath, text: query.text, options: { encoding: 'utf8' }})
+        const saved = await window.main.fileHelpers.save({
+          fileName: lastExportPath,
+          content: fullQuery.text,
+          filters: [
+            { name: 'SQL (*.sql)', extensions: ['sql'] },
+            { name: 'All Files (*.*)', extensions: ['*'] },
+          ],
+        })
+        if (saved === false) {
+          return
+        }
         this.$noty.success('Query exported!', { killer: notyQueue })
       } catch (e) {
         console.error(e)
@@ -858,11 +955,25 @@ import { TransportOpenTab, setFilters, matches, duplicate } from '@/common/trans
       }
     },
     async loadRoutineCreate(routine) {
-      const result = await this.connection.getRoutineCreateScript(routine.name, routine.type, routine.schema);
+      const result = await this.connection.getRoutineCreateScript(routine.name, routine.type, routine.schema, routine.oid);
       const stringResult = safeFormat(_.isArray(result) ? result[0] : result, { language: FormatterDialect(this.dialect) })
       this.createQuery(stringResult);
     },
+    switchUserKeymap(value) {
+      this.$store.dispatch('settings/save', { key: 'keymap', value: value });
+    },
+    pasteAsNewRowsWrongTabCheck() {
+      // The active table's Data tab handles this itself. Anywhere else, the
+      // action isn't applicable, so surface a hint.
+      if (this.activeTab?.tabType !== 'table') {
+        this.$noty.error("Paste as new rows is only available in a table's Data tab")
+      }
+    },
     openTableBuilder() {
+      if (this.connectionType === 'mongodb') {
+        this.$root.$emit(AppEvent.openCreateCollectionModal);
+        return;
+      }
       const tab = {} as TransportOpenTab;
       tab.tabType = 'table-builder';
       tab.title = "New Table"
@@ -872,19 +983,19 @@ import { TransportOpenTab, setFilters, matches, duplicate } from '@/common/trans
     openTableProperties({ table }) {
       const t = {} as TransportOpenTab;
       t.tabType = 'table-properties';
-      t.tableName = table.name
-      t.schemaName = table.schema
-      t.title = table.name
+      t.tableName = table.name ?? table.tableName
+      t.schemaName = table.schema ?? table.schemaName
+      t.title = table.name ?? table.tableName
       const existing = this.tabItems.find((tab) => matches(tab, t))
       if (existing) return this.$store.dispatch('tabs/setActive', existing)
       this.addTab(t)
     },
-    openTable({ table, filters }) {
+    async openTable({ table, filters }) {
       let tab = {} as TransportOpenTab;
       tab.tabType = 'table';
-      tab.title = table.name
-      tab.tableName = table.name
-      tab.schemaName = table.schema
+      tab.title = table.name ?? table.tableName
+      tab.tableName = table.name ?? table.tableName
+      tab.schemaName = table.schema ?? table.schemaName
       tab.entityType = table.entityType
       tab = setFilters(tab, filters)
       tab.titleScope = "all"
@@ -893,9 +1004,9 @@ import { TransportOpenTab, setFilters, matches, duplicate } from '@/common/trans
         if (filters) {
           existing = setFilters(existing, filters)
         }
-        this.$store.dispatch('tabs/setActive', existing)
+        await this.$store.dispatch('tabs/setActive', existing)
       } else {
-        this.addTab(tab)
+        await this.addTab(tab)
       }
     },
     openExportModal(options) {
@@ -920,21 +1031,27 @@ import { TransportOpenTab, setFilters, matches, duplicate } from '@/common/trans
       await this.setActiveTab(tab)
 
     },
-      handleAltNumberKeyPress(event) {
-      if (event.altKey) {
-        const pressedNumber = Number(event.key); // Convert keyCode to the corresponding number
-        if(pressedNumber <= this.tabItems.length) {
-          this.setActiveTab(this.tabItems[pressedNumber - 1])
-        }
-      }
+    handleSwitchTab(n: number) {
+      const tab = this.tabItems[n]
+      if(tab) this.setActiveTab(tab)
     },
     async close(tab: TransportOpenTab, options?: CloseTabOptions) {
+      if (this.closingTab) return; // prevent close modals queueing
+
       if (tab.unsavedChanges && !options?.ignoreUnsavedChanges) {
+        let confirmed = false
         this.closingTab = tab
-        const confirmed = await this.$confirmById(this.confirmModalId);
-        this.closingTab = null
+        try {
+          confirmed = await this.$confirmById(this.confirmModalId);
+        } finally {
+          // Never leave this set - it gates every close, so a stuck value
+          // silently disables tab closing for the rest of the session.
+          this.closingTab = null
+        }
         if (!confirmed) return
       }
+
+      this.trigger(AppEvent.closingTab, tab)
 
       if (this.activeTab === tab) {
         if (tab === this.lastTab) {
@@ -947,14 +1064,22 @@ import { TransportOpenTab, setFilters, matches, duplicate } from '@/common/trans
       if (tab.queryId) {
         await this.$store.dispatch('data/queries/reload', tab.queryId)
       }
+
+      const { schemaName, tabType, tableName } = tab;
+      const closingSidebarItem = `${tabType}.${schemaName}.${tableName}`;
+      if(closingSidebarItem === this.selectedSidebarItem){
+        this.$store.commit('selectSidebarItem', null);
+      }
     },
-    async forceClose(tab: TransportOpenTab) {
+    async forceClose(tab: TransportOpenTab): Promise<void> {
       // ensure the tab is active
       this.$store.dispatch('tabs/setActive', tab);
       switch (tab.tabType) {
         case 'backup':
         case 'restore':
           break;
+        case 'query':
+          return this.close(tab, { ignoreUnsavedChanges: true });
         default:
           console.log('No force close behaviour defined for tab type')
       }
@@ -965,7 +1090,7 @@ import { TransportOpenTab, setFilters, matches, duplicate } from '@/common/trans
       if (unsavedTabs.length > 0) {
         const confirmed = await this.$confirm(
           'Close all tabs?',
-          `You have ${unsavedTabs.length} unsaved ${window.main.pluralize('tab', unsavedTabs.length)}. Are you sure?`
+          `You have ${unsavedTabs.length} unsaved ${this.$pluralize('tab', unsavedTabs.length)}. Are you sure?`
         )
         if (!confirmed) return
       }
@@ -977,7 +1102,7 @@ import { TransportOpenTab, setFilters, matches, duplicate } from '@/common/trans
       if (unsavedTabs.length > 0) {
         const confirmed = await this.$confirm(
           'Close other tabs?',
-          `You have ${unsavedTabs.length} unsaved ${window.main.pluralize('tab', unsavedTabs.length)}. Are you sure?`
+          `You have ${unsavedTabs.length} unsaved ${this.$pluralize('tab', unsavedTabs.length)}. Are you sure?`
         )
         if (!confirmed) return
       }
@@ -997,7 +1122,7 @@ import { TransportOpenTab, setFilters, matches, duplicate } from '@/common/trans
       if (unsavedTabs.length > 0) {
         const confirmed = await this.$confirm(
           'Close tabs to the right?',
-          `You have ${unsavedTabs.length} unsaved ${window.main.pluralize('tab', unsavedTabs.length)} to be closed. Are you sure?`
+          `You have ${unsavedTabs.length} unsaved ${this.$pluralize('tab', unsavedTabs.length)} to be closed. Are you sure?`
         )
         if (!confirmed) return
       }
@@ -1017,7 +1142,7 @@ import { TransportOpenTab, setFilters, matches, duplicate } from '@/common/trans
       }
       this.addTab(tab)
     },
-    favoriteClick(item) {
+    async favoriteClick(item, options?: { openHistory?: boolean }) {
       const tab = {} as TransportOpenTab
       tab.tabType = 'query'
       tab.title = item.title
@@ -1025,25 +1150,48 @@ import { TransportOpenTab, setFilters, matches, duplicate } from '@/common/trans
       tab.unsavedChanges = false
 
       const existing = this.tabItems.find((t) => matches(t, tab))
+      if (existing) {
+        await this.$store.dispatch('tabs/setActive', existing)
+      } else {
+        await this.addTab(tab)
+      }
+
+      if (options?.openHistory) {
+        await this.$nextTick()
+        this.trigger(AppEvent.openQueryEditHistory, item.id)
+      }
+    },
+    async createQueryFromItem(item) {
+      const tab = {} as TransportOpenTab;
+      tab.tabType = 'query';
+      tab.title = this.getNextQueryTitle();
+      if (item.id) {
+        tab.usedQueryId = item.id;
+      }
+      tab.unsavedChanges = false;
+
+      const existing = this.tabItems.find((t) => matches(t, tab))
       if (existing) return this.$store.dispatch('tabs/setActive', existing)
 
-      this.addTab(tab)
-
+      this.addTab(tab);
     },
-    createQueryFromItem(item) {
-      this.createQuery(item.text)
-    }
+    copyName(item) {
+      if (item.tabType !== 'table' && item.tabType !== "table-properties") return;
+      this.$copyText(item.tableName)
+    },
   },
   beforeDestroy() {
     this.unregisterHandlers(this.rootBindings)
   },
 
   async mounted() {
-    await this.$store.dispatch('tabs/load')
-    if (!this.tabItems?.length) {
-      this.createQuery()
-    }
     this.registerHandlers(this.rootBindings)
   }
 })
 </script>
+
+<style lang="scss">
+  .add-tab-dropdown {
+    padding: 0 0 !important;
+  }
+</style>

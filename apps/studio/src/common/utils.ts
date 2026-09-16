@@ -2,15 +2,35 @@
 
 import { Error as CustomError } from '../lib/errors'
 import _ from 'lodash';
-import { format } from 'sql-formatter';
-import { TableFilter, TableOrView, Routine } from '@/lib/db/models';
+import { format, formatDialect, FormatOptionsWithDialect, FormatOptionsWithLanguage } from 'sql-formatter';
+import { TableFilter, TableOrView, Routine, TableColumn } from '@/lib/db/models';
 import { SettingsPlugin } from '@/plugins/SettingsPlugin';
 import { IndexColumn } from '@shared/lib/dialects/models';
+import type { Stream } from 'stream';
+
+export function camelCaseObjectKeys(data) {
+  if (_.isArray(data)) return data.map(camelCaseObjectKeys);
+  if (_.isPlainObject(data)) {
+    return _.deepMapKeys(data, (_value, key) => _.camelCase(key))
+  }
+  return data
+}
+
+export function snakeCaseObjectKeys(data) {
+  if (_.isArray(data)) return data.map(snakeCaseObjectKeys);
+  if (_.isPlainObject(data)) {
+    return _.mapValues(
+      _.mapKeys(data, (_v, k) => _.snakeCase(k)),
+      snakeCaseObjectKeys
+    )
+  }
+  return data
+}
 
 export function parseIndexColumn(str: string): IndexColumn {
   str = str.trim()
 
-  const order = str.endsWith('DESC') ? 'DESC' : 'ASC'
+  const order = str.endsWith(' DESC') ? 'DESC' : 'ASC'
   const nameAndPrefix = str.replaceAll(' DESC', '').trimEnd()
 
   let name: string = nameAndPrefix
@@ -82,6 +102,9 @@ export function createCancelablePromise(error: CustomError, timeIdle = 100): any
     discard() {
       discarded = true;
     },
+    get canceled() {
+      return canceled;
+    }
   };
 }
 
@@ -90,13 +113,22 @@ export function makeString(value: any): string {
   return _.toString(value);
 }
 
+// Format SQL / SQL-like text using sql-formatter. Accepts both the classic
+// `{ language }` shape (built-in dialects like postgresql, mysql, trino) and
+// the v15 `{ dialect }` shape for custom dialect definitions (PartiQL). Falls
+// back to the raw input if the formatter can't parse — callers rely on this
+// never throwing.
 export function safeSqlFormat(
-  ...args: Parameters<typeof format>
-): ReturnType<typeof format> {
+  query: string,
+  options?: FormatOptionsWithLanguage | FormatOptionsWithDialect
+): string {
   try {
-    return format(args[0], args[1]);
-  } catch (ex) {
-    return args[0];
+    if (options && 'dialect' in options && options.dialect) {
+      return formatDialect(query, options as FormatOptionsWithDialect);
+    }
+    return format(query, options as FormatOptionsWithLanguage);
+  } catch (_ex) {
+    return query;
   }
 }
 
@@ -178,9 +210,15 @@ export function stringifyRangeData(rangeData: Record<string, any>[]) {
     transformedRangeData[i] = {};
 
     for (const key of keys) {
-      const value = rangeData[i][key];
-      transformedRangeData[i][key] =
-        value && typeof value === "object" ? JSON.stringify(value) : value;
+      let value = rangeData[i][key];
+
+      if (_.isTypedArray(value)) {
+        value = typedArrayToString(value);
+      } else if (value && typeof value === "object") {
+        value = JSON.stringify(value);
+      }
+
+      transformedRangeData[i][key] = value
     }
   }
 
@@ -193,4 +231,152 @@ export function isBksInternalColumn(field: string) {
   return field.endsWith('--bks')
     || field.startsWith('__beekeeper_internal')
     || field === rowHeaderField;
+}
+
+export function streamToString(stream: Stream): Promise<string> {
+  const chunks = [];
+  return new Promise((resolve, reject) => {
+    stream.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    stream.on("error", (err) => reject(err));
+    stream.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+  });
+}
+
+export function streamToBuffer(stream: Stream): Promise<Buffer> {
+  const chunks = [];
+  return new Promise((resolve, reject) => {
+    stream.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    stream.on("error", (err) => reject(err));
+    stream.on("end", () => resolve(Buffer.concat(chunks)));
+  });
+}
+
+/** Make `object.toString` look better :D */
+export function friendlyJsonObject<T extends object>(obj: T): T {
+  Object.defineProperties(obj, {
+    [Symbol.toPrimitive]() {
+      try {
+        return stringifyWithBigInt(obj);
+      } catch (ex) {
+        console.warn('Error serializing object:', obj, ex);
+        return "[object Object]"
+      }
+    },
+  });
+
+  if(!Object.prototype.hasOwnProperty.call(obj, "toString")){
+    Object.defineProperties(obj, {
+      toString: {
+        value() {
+          try {
+            return stringifyWithBigInt(obj);
+          } catch (ex) {
+            console.warn('Error serializing object:', obj, ex);
+            return "[object Object]"
+          }
+        },
+        enumerable: false, // This tells js to not clone this property. Useful when we want to send this object to utility.
+        }
+      })
+   }
+
+  return obj;
+}
+
+export function stringifyWithBigInt(value: any): string {
+  return JSON.stringify(
+    value,
+    (_key, val) => typeof val === 'bigint' ? `${val}n` : val
+  );
+}
+
+/** Convert Typed Array (Array Buffer View) to string based on `binaryEncoding` */
+export function typedArrayToString(typedArray: ArrayBufferView, forceEncoding?: 'hex' | 'base64') {
+  const encoding = forceEncoding || window.bksConfig.ui.general.binaryEncoding
+  if (encoding === 'base64') {
+    // @ts-expect-error polyfill
+    return typedArray.toBase64();
+  } else {
+    // @ts-expect-error polyfill
+    return typedArray.toHex();
+  }
+}
+
+export function stringToTypedArray(str: string, forceEncoding?: 'hex' | 'base64') {
+  const encoding = forceEncoding || window.bksConfig.ui.general.binaryEncoding
+  if (encoding === 'base64') {
+    // @ts-expect-error polyfill
+    return Uint8Array.fromBase64(str);
+  } else {
+    // @ts-expect-error polyfill
+    return Uint8Array.fromHex(str);
+  }
+}
+
+export function removeUnsortableColumnsFromSortBy(sortParms: { field: string; dir: string }[], tableColumns: TableColumn[], disallowedSortColumns = []) {
+  return sortParms.reduce((acc, sortObj) => {
+      const found = tableColumns.find(el => el.columnName.toLowerCase() === sortObj.field.toLowerCase())
+
+      if (!found) return acc
+      if (disallowedSortColumns.includes(found.dataType.toLowerCase())) return acc
+
+      acc.push(sortObj)
+      return acc
+    }, [])
+}
+
+export function toRegexSafe(input: string) {
+  const match = input.match(/^\/(.+)\/([a-z]*)$/);
+  if (!match) return null;
+  try {
+    return new RegExp(match[1], match[2]);
+  } catch (e) {
+    return null;
+  }
+}
+
+export function normalizeDataType (dataType) {
+  return dataType.toLowerCase()
+    .replace(/\(.+?\)/g, '')
+    .replace(/\b(unsigned|zerofill)\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+export function isDateDataType (dataType) {
+  const base = normalizeDataType(dataType)
+
+  const dateLikeStarts = [
+    'date',
+    'time',
+    'smalldatetime',
+    'year',
+    'interval'
+  ]
+
+  return dateLikeStarts.some(t => base.startsWith(t))
+}
+
+export function isNumericDataType (dataType) {
+  if (isDateDataType(dataType)) return false
+  const base = normalizeDataType(dataType)
+  const numericStarts = [
+    'smallint',
+    'int',
+    'bigint',
+    'serial',
+    'bigserial',
+    'decimal',
+    'numeric',
+    'real',
+    'float',
+    'double',
+    'money',
+    'smallmoney',
+    'tinyint',
+    'mediumint',
+    'bit'
+  ]
+
+  return numericStarts.some(t => base.startsWith(t))
 }

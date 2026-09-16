@@ -3,7 +3,7 @@ import path from 'path'
 import crypto from 'crypto'
 import { promises } from 'fs'
 import { dialectFor } from '@shared/lib/dialects/models'
-import rawlog from 'electron-log'
+import rawlog from '@bksLogger'
 import { BeeCursor, TableColumn, TableFilter, TableOrView } from '../db/models'
 import { ExportOptions, ExportStatus, ProgressCallback, ExportProgress } from './models'
 import _ from 'lodash'
@@ -33,6 +33,7 @@ export abstract class Export {
   private callbacks = {
     progress: Array<ProgressCallback>()
   }
+  private headerWritten: boolean = false
 
   constructor(
     public filePath: string,
@@ -94,7 +95,8 @@ export abstract class Export {
     if([ExportStatus.Completed, ExportStatus.Aborted, ExportStatus.Error].includes(this.status)) {
       return 100
     }
-    return Math.round((this.countExported / this.countTotal) * 100)
+    if (this.countTotal === 0 || this.countTotal === -1) return this.countTotal
+    return Math.min(100, Math.round((this.countExported / this.countTotal) * 100))
   }
 
   notify() {
@@ -137,35 +139,33 @@ export abstract class Export {
         this.options.chunkSize,
         this.table.schema,
       )
-      this.columns = results.columns
-      this.cursor = results.cursor
-
-      this.countTotal = results.totalRows
-      await this.cursor?.start()
-      const header = await this.getHeader(results.columns)
-
-      if (header) {
-        await this.fileHandle.write(header)
-      }
     }
     else {
-      // string sql query, not table
       results = await this.connection.queryStream(
         this.query,
         this.options.chunkSize,
       )
-      this.columns = results.columns
-      this.cursor = results.cursor
-
-      this.countTotal = results.totalRows
-      await this.cursor?.start()
-      const header = await this.getHeader(results.columns)
-
-      if (header) {
-        await this.fileHandle.write(header)
-      }
-
     }
+
+    this.columns = results.columns
+    this.cursor = results.cursor
+
+    this.countTotal = results.totalRows ?? -1
+    await this.cursor?.start()
+
+    if (this.columns) {
+      await this.writeHeader();
+    }
+  }
+
+  async writeHeader(): Promise<void> {
+    if (this.headerWritten) return;
+    const header = await this.getHeader(this.columns)
+
+    if (header) {
+      await this.fileHandle.write(header)
+    }
+    this.headerWritten = true;
   }
 
   async exportData(): Promise<void> {
@@ -178,6 +178,14 @@ export abstract class Export {
           throw new Error("Something went wrong")
         }
         rows = await this.cursor?.read()
+
+        if (!this.columns) {
+          this.columns = this.cursor.columns;
+          if (this.columns) {
+            await this.writeHeader();
+          }
+        }
+
         for (let rI = 0; rI < rows.length; rI++) {
           const row = rows[rI];
           const mutated = Mutators.mutateRow(row, this.columns?.map((c) => c.dataType), this.preserveComplex, dialectFor(this.connection.connectionType))
@@ -249,9 +257,11 @@ export abstract class Export {
   calculateTimeLeft(): void {
     if (this.lastChunkTime) {
       this.timeElapsed += (Date.now() - this.lastChunkTime)
-      const recordsLeft = this.countTotal - this.countExported
-      const timePerRecord = this.timeElapsed / this.countExported
-      this.timeLeft = Math.round(timePerRecord * recordsLeft)
+      if (this.countTotal !== -1) {
+        const recordsLeft = this.countTotal - this.countExported
+        const timePerRecord = this.timeElapsed / this.countExported
+        this.timeLeft = Math.round(timePerRecord * recordsLeft)
+      }
     }
 
     this.lastChunkTime = Date.now()

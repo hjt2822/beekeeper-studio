@@ -116,10 +116,9 @@
 </template>
 
 <script>
-import pluralize from 'pluralize'
 import dateFormat from 'dateformat'
 import { mapGetters, mapMutations, mapState } from "vuex"
-import rawlog from 'electron-log'
+import rawlog from '@bksLogger'
 import { ExportFormCSV, ExportFormJSON, ExportFormSQL, ExportFormJsonLine } from "../export/forms"
 import FilePicker from '../common/form/FilePicker.vue'
 const log = rawlog.scope('export/multi-export-manager')
@@ -169,7 +168,7 @@ export default {
       )
     },
     filesToBeExported() {
-      return `${pluralize('files', this.tablesToExport.length, true)} will be created, one for each table exported`
+      return `${this.$pluralize('files', this.tablesToExport.length, true)} will be created, one for each table exported`
     },
     optionalFileName () {
       if (this.fileName) return `_${this.fileName}`

@@ -11,31 +11,25 @@
         />
 
         <div class="table-subheader">
-          <div class="table-title">
-            <h2>Partitions</h2>
-          </div>
-          <slot />
-          <span class="expand" />
-          <div class="actions">
-            <a
-              @click.prevent="refreshPartitions"
-              class="btn btn-link btn-fab"
-              v-tooltip="`${ctrlOrCmd('r')} or F5`"
-            ><i class="material-icons">refresh</i></a>
-            <a
-              v-if="editable"
-              @click.prevent="addRow"
-              class="btn btn-primary btn-fab"
-              v-tooltip="ctrlOrCmd('n')"
-            ><i class="material-icons">add</i></a>
-          </div>
+          <table-info-toolbar
+            :search-suffix="structureFilterSuffix"
+            filter-placeholder="Filter partitions"
+            :show-add="editable"
+            add-label="Partition"
+            @search="setStructureFilterQuery"
+            @add="addRow"
+            @copy="copyStructure"
+            @refresh="refreshPartitions"
+          >
+            <slot />
+          </table-info-toolbar>
         </div>
         <div ref="tablePartitions" />
       </div>
     </div>
 
     <div class="expand" />
-    <status-bar class="tablulator-footer">
+    <status-bar class="tablulator-footer" :active="active">
       <div class="flex flex-middle statusbar-actions">
         <slot name="footer" />
         <x-button
@@ -94,18 +88,22 @@ import _ from 'lodash';
 import { TabulatorStateWatchers, vueEditor, trashButton } from '@shared/lib/tabulator/helpers'
 import StatusBar from '../common/StatusBar.vue'
 import ErrorAlert from '../common/ErrorAlert.vue'
+import TableInfoToolbar from './TableInfoToolbar.vue'
 import NullableInputEditorVue from '@shared/components/tabulator/NullableInputEditor.vue'
 import { AppEvent } from '@/common/AppEvent';
 import { FormatterDialect } from '@shared/lib/dialects/models';
 import { format } from 'sql-formatter';
 import { mapState } from 'vuex';
+import { StructureCopyMixin } from '@/mixins/structureCopy';
+import { StructureFilterMixin } from '@/mixins/structureFilter';
 
 export default Vue.extend({
 	components: {
     StatusBar,
-    ErrorAlert
+    ErrorAlert,
+    TableInfoToolbar
   },
-  mixins: [DataMutators],
+  mixins: [DataMutators, StructureCopyMixin, StructureFilterMixin],
   props: ['table', 'tabID', 'active', 'tabState', 'properties'],
   data() {
     return {
@@ -128,16 +126,12 @@ export default Vue.extend({
     ...mapState(['supportedFeatures', 'connection']),
     hotkeys() {
       if (!this.active) return {};
-      const result = {};
-      result['f5'] = this.refreshPartitions.bind(this)
-      result[this.ctrlOrCmd('r')] = this.refreshPartitions.bind(this)
-      if (this.editable) {
-        result[this.ctrlOrCmd('n')] = this.addRow.bind(this)
-        result[this.ctrlOrCmd('s')] = this.submitApply.bind(this)
-        result[this.ctrlOrCmd('shift+s')] = this.submitSql.bind(this)
-      }
-
-      return result;
+      return this.$vHotkeyKeymap({
+        'general.refresh': this.refreshPartitions.bind(this),
+        'general.addRow': this.addRow.bind(this),
+        'general.save': this.submitApply.bind(this),
+        'general.openInSqlEditor': this.submitSql.bind(this),
+      })
     },
     hasEdits() {
       return this.editCount > 0;
@@ -217,6 +211,8 @@ export default Vue.extend({
       await this.$emit('refresh');
     },
     async addRow(): Promise<void> {
+      if (!this.editable) return;
+
       const data = this.tabulator.getData();
       const name = `${this.table.name}_partition_${data.length + 1}`;
       const row: RowComponent = await this.tabulator.addRow({name, expression: this.expressionTemplate, num: 0});
@@ -267,6 +263,8 @@ export default Vue.extend({
       };
     },
     async submitApply(): Promise<void> {
+      if (!this.editable) return;
+
       try {
         this.error = null;
         const changes = this.collectChanges();
@@ -282,6 +280,8 @@ export default Vue.extend({
       }
     },
     async submitSql(): Promise<void> {
+      if (!this.editable) return;
+
       try {
         this.error = null;
         const changes = this.collectChanges();

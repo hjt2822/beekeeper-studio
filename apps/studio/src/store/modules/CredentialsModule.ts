@@ -13,7 +13,8 @@ function genAppId() {
 
 export interface WSWithClient {
   workspace: IWorkspace,
-  client: CloudClient
+  client: CloudClient,
+  credentialId: number
 }
 
 export interface CredentialBlob {
@@ -31,7 +32,7 @@ interface State {
 
 async function credentialToBlob(c: TransportCloudCredential): Promise<CredentialBlob> {
   const clientOptions: CloudClientOptions = {
-    app: c.appId, email: c.email, token: c.token, baseUrl: window.platformInfo.cloudUrl
+    app: c.appId, email: c.email, token: c.token, baseUrl: window.platformInfo.cloudUrl, clientVersion: window.platformInfo.appVersion
   }
   const client = new CloudClient(clientOptions)
   try {
@@ -70,11 +71,13 @@ export const CredentialsModule: Module<State, RootState> = {
       const c: CredentialBlob[] = state.credentials
       const result = c.flatMap((cred) => {
         return cred.workspaces.map((ws) => ({
-          workspace: ws, client: cred.client
+          workspace: ws,
+          client: cred.client,
+          credentialId: cred.id
         }))
       })
       return [
-        { workspace: LocalWorkspace, client: null },
+        { workspace: LocalWorkspace, client: null, credentialId: null },
         ...result
       ]
     },
@@ -94,6 +97,18 @@ export const CredentialsModule: Module<State, RootState> = {
     add(state, cred: CredentialBlob) {
       upsert(state.credentials, cred)
     },
+    pushWorkspace(state, payload: { blobId: number, workspace: IWorkspace }) {
+      state.credentials
+        .find((c) => c.id === payload.blobId)
+        ?.workspaces.push(payload.workspace)
+    },
+    renameWorkspace(state, payload: { workspace: IWorkspace, name: string }) {
+      state.credentials.forEach((c) => c.workspaces.forEach((ws) => {
+        if (ws.id === payload.workspace.id) {
+          ws.name = payload.name
+        }
+      }))
+    }
   },
 
   actions: {
@@ -110,11 +125,12 @@ export const CredentialsModule: Module<State, RootState> = {
         context.commit('replace', results)
       } finally {
         context.commit('loading', false)
+        context.dispatch('setUserWorkspace')
       }
     },
     async login(context, { email, password }) {
-      const existing = await Vue.prototype.$util.send('appdb/credential/findOne', { email })
-      const appId = (await Vue.prototype.$util.send('appdb/credential/findOne', {}))?.appId || genAppId()
+      const existing = await Vue.prototype.$util.send('appdb/credential/findOneBy', { email })
+      const appId = (await Vue.prototype.$util.send('appdb/credential/findOneBy', {}))?.appId || genAppId()
       let cred: TransportCloudCredential = existing || {
         appId: null,
         email: null,
@@ -128,11 +144,61 @@ export const CredentialsModule: Module<State, RootState> = {
       cred = await Vue.prototype.$util.send('appdb/credential/save', { obj: cred })
       const result = await credentialToBlob(cred)
       context.commit('add', result)
+      context.dispatch('setUserWorkspace')
     },
     async logout(context, blob: CredentialBlob) {
       await Vue.prototype.$util.send('appdb/credential/remove', { obj: blob.credential });
       await context.dispatch('load')
-      await context.commit('workspaceId', -1, { root: true})
-    }
+      await context.commit('workspaceId', -1, { root: true })
+    },
+    async setUserWorkspace(context) {
+      const settingsResponse = context.rootGetters['settings/lastUsedWorkspace']
+      if (!settingsResponse) return
+      const lastUsedWorkspace = Number(settingsResponse.value)
+      const { workspaces } = context.getters
+
+      if (lastUsedWorkspace === LocalWorkspace.id) {
+        await Vue.prototype.$util.send('workspace/setActive', {
+          wId: LocalWorkspace.id
+        })
+        return
+      }
+
+      // Licenses on lifetime terms (subscription ended) don't include cloud
+      // workspaces, so don't restore the last-used cloud workspace.
+      if (context.rootGetters['licenses/isLifetime']) return
+
+      const match = workspaces.find((v: WSWithClient) => v?.workspace?.id === lastUsedWorkspace)
+
+      if (!match) return
+
+      await Vue.prototype.$util.send('workspace/setActive', {
+        wId: match.workspace.id,
+        credentialId: match.credentialId
+      })
+
+      context.commit('workspaceId', lastUsedWorkspace, { root: true })
+    },
+    async createWorkspace(context, payload: { blobId: number, name: string }) {
+      const client = context.state.credentials.find((c) => c.id === payload.blobId).client
+      const workspace = await client.workspaces.create({
+        name: payload.name,
+      } as IWorkspace)
+      context.commit('pushWorkspace', { blobId: payload.blobId, workspace })
+    },
+    async deleteWorkspace(context, payload: { client: CloudClient, workspaceId: number }) {
+      await payload.client.workspaces.delete({
+        id: payload.workspaceId
+      } as IWorkspace)
+      await context.dispatch('load')
+      await context.commit('workspaceId', -1, { root: true })
+    },
+    async renameWorkspace(context, payload: { client: CloudClient, workspace: IWorkspace, name: string }) {
+      const workspace = await payload.client.workspaces.update({
+        ...payload.workspace,
+        name: payload.name,
+      })
+      context.commit('renameWorkspace', { workspace, name: payload.name })
+    },
   }
 }

@@ -1,16 +1,14 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { AppEvent } from '@/common/AppEvent';
 import path from 'path';
 import fs from 'fs';
-import { SettingsPlugin } from '@/plugins/SettingsPlugin';
 import { homedir } from 'os';
 import tls, { SecureVersion } from 'tls';
 import username from 'username';
 import { execSync } from 'child_process';
-import rawLog from 'electron-log/renderer';
-import pluralize from 'pluralize';
-
-const log = rawLog.scope('preload.ts');
+import 'electron-log/preload';
+import type { SaveFileOptions } from '@/backend/lib/FileHelpers';
+import type { NativePluginMenuItem } from '@/services/plugin/types';
 
 const electron = require('@electron/remote');
 
@@ -33,8 +31,21 @@ export const api = {
     const platformInfo = await ipcRenderer.invoke('platformInfo')
     contextBridge.exposeInMainWorld('platformInfo', platformInfo);
   },
+  async requestBksConfigSource() {
+    const bksConfigSource = await ipcRenderer.invoke('bksConfigSource')
+    contextBridge.exposeInMainWorld('bksConfigSource', bksConfigSource);
+  },
   isReady() {
     ipcRenderer.send('ready');
+  },
+  enableConnectionMenuItems(){
+    ipcRenderer.send("enable-connection-menu-items");
+  },
+  disableConnectionMenuItems(){
+    ipcRenderer.send("disable-connection-menu-items");
+  },
+  sendUserActive() {
+    ipcRenderer.send("userActive");
   },
   send(event: AppEvent, name: string, arg?: any) {
     if (!Object.values<string>(AppEvent).includes(event)) return;
@@ -62,6 +73,7 @@ export const api = {
     ipcRenderer.send('install-update');
   },
   openExternally(link: string) {
+    // URL protocol is validated in the main process by safeOpenExternal.
     ipcRenderer.send(AppEvent.openExternally, [link]);
   },
   resolve(toResolve: string) {
@@ -83,11 +95,8 @@ export const api = {
 
     return [];
   },
-  async getLastExportPath(filename?: string) {
-    return await SettingsPlugin.get(
-      "lastExportPath",
-      path.join(homedir(), filename)
-    );
+  async defaultExportPath(filename?: string) {
+    return path.join(homedir(), filename);
   },
   showOpenDialogSync(args: any) {
     return electron.dialog.showOpenDialogSync(args);
@@ -96,7 +105,21 @@ export const api = {
     return electron.dialog.showSaveDialogSync(args);
   },
   openLink(link: string) {
-    return electron.shell.openExternal(link);
+    // Route through the main process so safeOpenExternal validates the
+    // protocol — never call shell.openExternal directly from preload.
+    ipcRenderer.send(AppEvent.openExternally, [link]);
+  },
+  onMaximize(func: any, sId: string) {
+    ipcRenderer.on(`maximize-${sId}`, func);
+  },
+  onUnmaximize(func: any, sId: string) {
+    ipcRenderer.on(`unmaximize-${sId}`, func);
+  },
+  onEnterFullscreen(func: any, sId: string) {
+    ipcRenderer.on(`enter-full-screen-${sId}`, func);
+  },
+  onLeaveFullscreen(func: any, sId: string) {
+    ipcRenderer.on(`leave-full-screen-${sId}`, func);
   },
   async isMaximized() {
     return await ipcRenderer.invoke('isMaximized');
@@ -122,11 +145,11 @@ export const api = {
   writeTextToClipboard(text: string) {
     return electron.clipboard.writeText(text);
   },
+  writeImageToClipboard(dataUrl: string) {
+    return electron.clipboard.writeImage(nativeImage.createFromDataURL(dataUrl));
+  },
   readTextFromClipboard(): string {
     return electron.clipboard.readText();
-  },
-  openPath(path: string) {
-    return electron.shell.openPath(path);
   },
   showItemInFolder(path: string) {
     electron.shell.showItemInFolder(path);
@@ -145,7 +168,6 @@ export const api = {
   },
   attachPortListener() {
     ipcRenderer.on('port', (event, { sId, utilDied }) => {
-      log.log('Received port in renderer with sId: ', sId);
       window.postMessage({ type: 'port', sId }, '*', event.ports);
 
       if (utilDied) {
@@ -156,9 +178,17 @@ export const api = {
   requestPorts() {
     ipcRenderer.invoke('requestPorts');
   },
-  pluralize(word: string, count?: number, inclusive?: boolean) {
-    return pluralize(word, count, inclusive);
-  }
+  fileHelpers: {
+    save(options: SaveFileOptions) {
+      return ipcRenderer.invoke('fileHelpers:save', options);
+    },
+  },
+  addNativeMenuItem(item: NativePluginMenuItem) {
+    ipcRenderer.send('add-native-menu-item', item);
+  },
+  removeNativeMenuItem(id: string) {
+    ipcRenderer.send('remove-native-menu-item', id);
+  },
 }
 
 contextBridge.exposeInMainWorld('main', api);

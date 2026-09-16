@@ -2,16 +2,21 @@ import { ConnectionsController } from '@/lib/cloud/controllers/ConnectionsContro
 import { AxiosInstance, AxiosRequestTransformer, AxiosResponseTransformer } from 'axios'
 import axios from 'axios'
 import _ from 'lodash';
-import rawLog from 'electron-log/renderer'
+import rawLog from '@bksLogger'
 import axiosRetry from 'axios-retry'
 
 import { res } from './ClientHelpers';
 import { QueriesController } from "./controllers/QueriesController";
+import { QueryAuditsController } from "./controllers/QueryAuditsController";
 import { WorkspacesController } from './controllers/WorkspacesController';
 import { ConnectionFoldersController } from '@/lib/cloud/controllers/ConnectionFoldersController';
 import { QueryFoldersController } from '@/lib/cloud/controllers/QueryFoldersController';
 import { UsedQueriesController } from '@/lib/cloud/controllers/UsedQueriesController';
+import { MembershipsController } from '@/lib/cloud/controllers/MembershipsController';
 import { LicenseKeyController } from './controllers/LicenseKeyController';
+import { camelCaseObjectKeys, snakeCaseObjectKeys } from '@/common/utils';
+
+import { IPlatformInfo } from '@/common/IPlatformInfo';
 
 const log = rawLog.scope('cloudClient')
 
@@ -21,28 +26,18 @@ const defaultTransformRequest = ad.transformRequest as AxiosRequestTransformer[]
 const defaultTransformResponse = ad.transformResponse as AxiosResponseTransformer[]
 
 const snakeCaseData: AxiosRequestTransformer = (data) => {
-  const result = _.mapKeys(data, (_value, key) => {
-    return _.snakeCase(key)
-  })
-  return result
+  return snakeCaseObjectKeys(data)
 }
 
 const camelCaseData: AxiosResponseTransformer = (data) => {
-  if (_.isPlainObject(data)) {
-    console.log('camel yes')
-    const result = _.deepMapKeys(data, (_value, key) => _.camelCase(key))
-    log.info('camel result', result)
-    return result
-
-  }
-  console.log('camel no')
-  return data
+  return camelCaseObjectKeys(data)
 }
 
 
 export interface CloudClientOptions {
   token: string,
   app: string,
+  clientVersion: string,
   email: string
   baseUrl: string,
   workspace?: number
@@ -70,17 +65,20 @@ export class CloudClient {
   }
 
 
-  public static async getLicense(baseUrl: string, email: string, key: string) {
+  public static async getLicense(baseUrl: string, email: string, key: string, installationId = "", platformInfo: IPlatformInfo) {
     const controller = new LicenseKeyController(staticAxios(baseUrl))
-    return await controller.get(email, key)
+    log.debug("Fetching license info! Installation id", installationId)
+    return await controller.get(email, key, installationId, platformInfo)
   }
 
   axios: AxiosInstance
   public queries: QueriesController
+  public queryAudits: QueryAuditsController
   public connections: ConnectionsController
   public connectionFolders: ConnectionFoldersController
   public queryFolders: QueryFoldersController
   public usedQueries: UsedQueriesController
+  public memberships: MembershipsController
   public workspaces: WorkspacesController
   public workspaceId: number
   constructor(public options: CloudClientOptions) {
@@ -92,7 +90,8 @@ export class CloudClient {
       headers: {
         email: options.email,
         token: options.token,
-        app: options.app
+        app: options.app,
+        clientVersion: options.clientVersion,
       },
       validateStatus: (status) => status < 500
     })
@@ -100,19 +99,21 @@ export class CloudClient {
     axiosRetry(this.axios, { retries: 3, retryDelay: () => 2000, shouldResetTimeout: true})
 
     this.queries = new QueriesController(this.axios)
+    this.queryAudits = new QueryAuditsController(this.axios)
     this.connections = new ConnectionsController(this.axios)
     this.connectionFolders = new ConnectionFoldersController(this.axios)
     this.queryFolders = new QueryFoldersController(this.axios)
     this.workspaces = new WorkspacesController(this.axios)
     this.usedQueries = new UsedQueriesController(this.axios)
+    this.memberships = new MembershipsController(this.axios)
 
     this.axios.interceptors.request.use(request => {
-      log.debug('REQ', JSON.stringify(request, null, 2))
+      // log.debug('REQ', request)
       return request
     })
 
     this.axios.interceptors.response.use(response => {
-      log.debug('RES:', JSON.stringify(response, null, 2))
+      // log.debug('RES:', response)
       return response
     })
 

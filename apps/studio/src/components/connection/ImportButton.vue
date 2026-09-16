@@ -1,8 +1,12 @@
 <template>
   <div class="import-button">
     <a
-      class="btn btn-link btn-small"
-      @click.prevent="$modal.show('import-modal')"
+      class="btn"
+      :class="[
+        variant === 'flat' ? 'btn-flat' : 'btn-link btn-small',
+        { disabled }
+      ]"
+      @click.prevent="!disabled && $modal.show('import-modal')"
       href="#"
     ><slot /></a>
     <portal to="modals">
@@ -11,7 +15,7 @@
         name="import-modal"
         height="auto"
         :scrollable="true"
-        @opened="$refs.importInput.select()"
+        @opened="$nextTick(() => $refs.importInput && $refs.importInput.select())"
       >
         <form
           v-kbd-trap="true"
@@ -60,7 +64,17 @@
 </template>
 <script>
 export default {
-    props: ['config'],
+    props: {
+      config: Object,
+      disabled: {
+        type: Boolean,
+        default: false
+      },
+      variant: {
+        type: String,
+        default: "small-link"
+      }
+    },
     data() {
       return {
         importError: null,
@@ -68,15 +82,17 @@ export default {
       }
     },
     methods: {
-      importFromUrl() {
-        if(this.config.parse(this.url)) {
-          if(!this.config.connectionType) {
-            this.importError = "Unable to determine database type from the URL"
+      async importFromUrl() {
+        try {
+          const conf = await this.$util.send('appdb/saved/parseUrl', { url: this.url });
+          Object.assign(this.config, conf);
+          if (!this.config.connectionType) {
+            this.importError = "Unable to determine database type from the URL";
           } else {
-            this.url = null
+            this.url = null;
             this.$modal.hide('import-modal')
           }
-        } else {
+        } catch {
           this.importError = "Unable to parse url"
         }
       },

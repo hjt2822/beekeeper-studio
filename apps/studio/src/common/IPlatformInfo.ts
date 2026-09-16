@@ -1,3 +1,6 @@
+import type { BksVersion } from '@/lib/license';
+import type { Platform } from '@/types';
+
 export interface IPlatformInfo {
   isWindows: boolean,
   isMac: boolean,
@@ -8,10 +11,14 @@ export interface IPlatformInfo {
   sessionType: string,
   isWayland: boolean,
   isSnap: string,
+  isFlatpak: boolean,
   isPortable: string,
   isDevelopment: boolean,
   isAppImage: boolean,
+  isAppImageLauncher: boolean,
   sshAuthSock: string,
+  sshConfigExists: boolean,
+  defaultSshIdentityFile: string,
   environment: string,
   resourcesPath: string,
   env: {
@@ -21,17 +28,23 @@ export interface IPlatformInfo {
   },
   debugEnabled: boolean,
   DEBUG: string,
-  platform: "linux" | "windows" | "mac",
+  platform: Platform,
   darkMode: boolean,
   userDirectory: string,
   downloadsDirectory: string,
   homeDirectory: string,
+  pluginsDirectory: string,
+  driverDepsDirectory: string,
   testMode: boolean,
   appDbPath: string,
   updatesDisabled: boolean,
   appVersion: string,
+  parsedAppVersion: BksVersion,
   cloudUrl: string,
   locale: string,
-  isCommunity: boolean,
-  isUltimate: boolean
-};
+  // Resolved log level pushed from main when the renderer requests
+  // platformInfo. Renderer applies this to its console + ipc transports
+  // so BKS_LOG_LEVEL / DEBUG affect what the renderer actually emits.
+  // Mirrors the LogLevel union from the shared logger library.
+  logLevel?: 'error' | 'warn' | 'info' | 'verbose' | 'debug' | 'silly',
+}

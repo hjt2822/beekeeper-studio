@@ -12,10 +12,21 @@ import {
 } from "@/lib/menu/tableMenu";
 import { rowHeaderField } from "@/common/utils";
 import _ from "lodash";
+import rawLog from "@bksLogger";
+
+const log = rawLog.scope("common/tabulator");
 
 interface Options extends TabulatorOptions {
-  table: string;
+  table?: string;
   schema?: string;
+  onRangeChange?: (ranges: RangeComponent[]) => void;
+}
+
+export interface TabulatorFormatterParams {
+  fk?: any[];
+  isPK?: boolean;
+  fkOnClick?: (e: MouseEvent, cell: CellComponent) => void
+  binaryEncoding?: string
 }
 
 export function tabulatorForTableData(
@@ -28,17 +39,33 @@ export function tabulatorForTableData(
       columns: ["width", "visible"],
     },
     persistenceMode: "local",
+    persistenceWriterFunc: (id: string, type: string, data: unknown) => {
+      try {
+        localStorage.setItem(`${id}-${type}`, JSON.stringify(data));
+      } catch (e) {
+        log.warn(e);
+      }
+    },
     renderHorizontal: "virtual",
     autoResize: false,
     nestedFieldSeparator: false,
     selectableRange: true,
     selectableRangeColumns: true,
+    selectableRangeMode: "ctrl",
     selectableRangeAutoFocus: false,
     selectableRangeRows: true,
     resizableColumnGuide: true,
     movableColumns: true,
     height: "100%",
-    editTriggerEvent: "dblclick",
+    editTriggerEvent: window.bksConfig.ui.tableTable.editTrigger === "click" 
+      ? "click" 
+      : "dblclick",
+    debugInvalidComponentFuncs: false,
+    history: true,
+    keybindings: {
+      undo: window.bksConfig.getKeybindings("tabulator", "general.undo"),
+      redo: window.bksConfig.getKeybindings("tabulator", "general.redo"),
+    },
     rowHeader: {
       field: rowHeaderField,
       resizable: false,
@@ -53,15 +80,18 @@ export function tabulatorForTableData(
       width: 38,
       hozAlign: "center",
       formatter: "rownum",
-      formatterParams: { relativeToPage: true },
+      formatterParams: {
+        relativeToPage: true,
+        binaryEncoding: window.bksConfig.ui.general.binaryEncoding,
+      },
       contextMenu: (_e, cell) => {
-        return copyActionsMenu({ ranges: cell.getRanges(), table, schema });
+        return copyActionsMenu({ ranges: cell.getRanges(), table: table || "mytable", schema });
       },
       headerContextMenu: (_e, column) => {
         return [
           ...copyActionsMenu({
             ranges: column.getTable().getRanges(),
-            table,
+            table: table || "mytable",
             schema,
           }),
           { separator: true },
@@ -72,5 +102,23 @@ export function tabulatorForTableData(
     },
   };
   const mergedOptions = _.merge(defaultOptions, tabulatorOptions);
-  return new TabulatorFull(el, mergedOptions);
+  const tabulator = new TabulatorFull(el, mergedOptions);
+
+  if (options.onRangeChange) {
+    const onRangeChange = () => {
+      options.onRangeChange(tabulator.getRanges());
+    };
+    tabulator.on("cellMouseUp", onRangeChange);
+    tabulator.on("headerMouseUp", onRangeChange);
+    tabulator.on(
+      "keyNavigate",
+      // This is slow if we do a long press. Debounce it so it feels good.
+      _.debounce(onRangeChange, 100, {
+        leading: true, trailing: true
+      })
+    );
+    // Tabulator range is reset after data is processed
+    tabulator.on("dataProcessed", onRangeChange);
+  }
+  return tabulator
 }

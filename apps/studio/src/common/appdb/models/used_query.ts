@@ -1,4 +1,5 @@
 import { Entity, Column, Index, BeforeInsert, BeforeUpdate } from 'typeorm'
+import { IsInt, MaxLength, Min } from 'class-validator';
 import { ApplicationEntity  } from './application_entity'
 
 @Entity({ name: 'used_query'})
@@ -8,8 +9,12 @@ export class UsedQuery extends ApplicationEntity {
     return this;
   }
 
-  @Column({type: "text", nullable: false})
+  @MaxLength(2_000_000, { message: `Queries have a max length of 2,000,000 characters.` })
+  @Column({type: "text", nullable: false, select: false})
   text!: string
+
+  @Column({type: 'text'})
+  excerpt: string
 
   @Column("varchar")
   database!: string
@@ -22,11 +27,15 @@ export class UsedQuery extends ApplicationEntity {
   status = 'pending'
 
   @Column({ type:'bigint', nullable: true})
-  numberOfRecords?: BigInt
+  numberOfRecords?: bigint
 
   @Column({ type: 'integer', nullable: false, default: -1 })
   workspaceId = -1
 
+  @IsInt({ message: 'connectionId must be a saved connection id' })
+  @Min(1, { message: 'connectionId must be a saved connection id' })
+  @Column({ type: "integer", nullable: false, default: -1 })
+  connectionId = -1
 
   @BeforeInsert()
   @BeforeUpdate()

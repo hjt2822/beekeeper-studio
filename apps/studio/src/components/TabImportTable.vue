@@ -1,12 +1,23 @@
 <template>
-  <div class="tabcontent">
-    <div
-      v-if="isSupported"
-      class="tabcontent"
-    >
-      <upsell-content v-if="!hasActiveLicense"></upsell-content>
+  <div
+    v-if="!isSupported"
+    class="tab-content"
+  >
+    <div class="not-supported">
+      <p>
+        Beekeeper does not currently support Import from File for {{ this.dialectTitle }} ☹️
+      </p>
+    </div>
+  </div>
+  <div
+    v-else-if="isCommunity"
+    class="upgrade-panel-tab-wrapper"
+  >
+    <upgrade-panel feature-name="Import From File" standalone />
+  </div>
+  <div v-else class="tab-content">
+    <div class="import-table-container">
       <stepper
-        v-else
         :steps="importSteps"
         :button-portal-target="portalName"
         wrapper-class="import-export-wrapper"
@@ -18,7 +29,9 @@
         v-if="importStarted"
       >
         <div class="import-progress-wrapper flex-col">
-          <i :class="[{error: this.importError !== null}, 'material-icons loading-icon']">{{ getProgressIcon }}</i>
+          <i :class="[{error: this.importError !== null, spinning: isSpinning}, 'material-icons loading-icon']">
+            {{ getProgressIcon }}
+          </i>
           <div class="text-2x">
             {{ getProgressTitle }}
           </div>
@@ -44,10 +57,10 @@
         </div>
         <div v-else-if="this.importError">
           <p>The whole import was aborted with a transaction rollback</p>
-          <p>
-            <span class="import-error-message">
+          <div>
+            <p class="import-error-message">
               {{ importError }}
-            </span>
+            </p>
             <span class="buttons">
               <a
                 @click.prevent="goBack"
@@ -62,26 +75,22 @@
                 v-clipboard:error="onCopyError"
                 class="btn btn-icon"
                 :class="copyClass"
-              ><span
-                class="material-icons"
-                :title="copyTitle"
-              >{{ copyIcon }}</span>{{ copyMessage }}</a>
-
+              >
+                <span
+                  class="material-icons"
+                  :title="copyTitle"
+                >
+                  {{ copyIcon }}
+                </span>
+                {{ copyMessage }}
+              </a>
             </span>
-          </p>
+          </div>
         </div>
       </div>
     </div>
-    <div
-      class="not-supported"
-      v-else
-    >
-      <p>
-        Beekeeper does not currently support Import from File for {{ this.dialectTitle }} ☹️
-      </p>
-    </div>
-    
-    <status-bar>
+
+    <status-bar :active="true">
       <div class="statusbar-info col flex expand">
         <span
           class="statusbar-item"
@@ -104,36 +113,37 @@
   import { AppEvent } from '@/common/AppEvent'
   import Stepper from './stepper/Stepper.vue'
   import ImportFile from './importtable/ImportFile.vue'
+  import ImportTable from './importtable/ImportTable.vue'
   import ImportMapper from './importtable/ImportMapper.vue'
   import ImportPreview from './importtable/ImportPreview.vue'
-  import UpsellContent from '@/components/connection/UpsellContent.vue'
+  import UpgradePanel from '@/components/upsell/UpgradePanel.vue'
   import { DialectTitles } from '@shared/lib/dialects/models'
-  
+
   import { ExportStatus } from '../lib/export/models'
   import StatusBar from '@/components/common/StatusBar.vue';
-  import { getImporterClass } from '../lib/import/utils'
 
   export default {
     components: {
       Stepper,
       StatusBar,
-      UpsellContent
+      UpgradePanel
     },
     props: {
       schema: {
         type: String,
         required: false,
-        default: ''
+        default: null
       },
       table: {
         type: String,
-        required: true,
+        required: false,
         default: ''
       },
       tab: {
         type: Object,
         required: true
-      }
+      },
+      active: Boolean,
     },
     data() {
       return {
@@ -147,15 +157,28 @@
         importStarted: false,
         importSteps: [
           {
+            component: ImportTable,
+            title: 'Select/Create Table',
+            icon: 'grid_on',
+            stepperProps: {
+              schema: this.schema,
+              table: this.table,
+              tabId: this.tab.id
+            },
+            completed: false,
+            completePrevious: false,
+            nextButtonText: 'Choose File',
+            nextButtonIcon: 'keyboard_arrow_right'
+          },
+          {
             component: ImportFile,
             title: 'Choose File',
             icon: 'attach_file',
             stepperProps: {
-              schema: this.schema,
-              table: this.table
+              tabId: this.tab.id
             },
             completed: false,
-            completePrevious: false,
+            completePrevious: true,
             nextButtonText: 'Map to Table',
             nextButtonIcon: 'keyboard_arrow_right'
           },
@@ -164,8 +187,7 @@
             title: 'Map to Table',
             icon: 'settings',
             stepperProps: {
-              schema: this.schema,
-              table: this.table
+              tabId: this.tab.id
             },
             completed: false,
             validateOnNext: true,
@@ -178,8 +200,7 @@
             title: 'Review & Execute',
             icon: 'check',
             stepperProps: {
-              schema: this.schema,
-              table: this.table
+              tabId: this.tab.id
             },
             completed: false,
             completePrevious: true,
@@ -190,22 +211,27 @@
       }
     },
     computed: {
-      ...mapGetters(['schemaTables', 'dialectData', 'dialect']),
-      ...mapGetters({ 'hasActiveLicense': 'licenses/hasActiveLicense' }),
+      ...mapGetters(['schemaTables', 'dialectData', 'dialect', 'isCommunity', 'isUltimate']),
       ...mapState(['tables', 'connection']),
       ...mapState('imports', {'tablesToImport': 'tablesToImport'}),
+      isSpinning() {
+        return this.importStarted && this.importError === null && this.timer === null;
+      },
       portalName() {
         return `tab-import-table-statusbar-${this.tab.id}`
       },
       tableName () {
-        const schema = this.schema ? `${this.schema}.` : ''
-        return `${schema}${this.table}`
+        const schema = this.importTable?.schema ? `${this.importTable?.schema}.` : ''
+        return `${schema}${this.importTable?.name}`
       },
       dialectTitle () {
         return DialectTitles[this.dialect]
       },
       isSupported () {
         return !this.dialectData.disabledFeatures.importFromFile
+      },
+      importKey() {
+        return `new-import-${this.tab.id}`
       },
       tableKey() {
         const schema = this.schema ? `${this.schema}_` : ''
@@ -219,7 +245,7 @@
       },
       getProgressIcon () {
         if (this.importStarted && this.importError === null && this.timer === null) {
-          return 'pending'
+          return 'autorenew'
         }
         return this.importError !== null ? 'error' : 'check_circle'
       },
@@ -253,26 +279,48 @@
         this.$root.$emit(AppEvent.closeTab)
       },
       viewData() {
-        this.$root.$emit(AppEvent.loadTable, { table: this.getTable() })
+        this.$root.$emit(AppEvent.loadTable, { table: {
+          entityType: 'table',
+          name: this.table,
+          schema: this.schema
+        } })
       },
       goBack() {
         this.importStarted = false
       },
+      async createNewTable (newTableSchema) {
+        return await this.$util.send('generator/build', { schema: newTableSchema });
+      },
       async handleImport() {
-        const importOptions = await this.tablesToImport.get(this.tableKey)
-        const connection = await this.connection
-        const importerClass = getImporterClass(importOptions, connection, importOptions.table)
-        const start = new Date()
-        this.tab.isRunning = true
+        const importOptions = await this.tablesToImport.get(this.importKey)
+        const isNewTable = importOptions.createNewTable
+        let importerClass
+        this.schema = importOptions.table.schema
+        this.table = importOptions.table.name
         this.importTable = importOptions.table
+
+        if (!importOptions.importProcessId) {
+          importerClass = await this.$util.send('import/init', { options: importOptions })
+        } else {
+          importerClass = importOptions.importProcessId
+        }
+
+        const start = new Date()
+
+        this.tab.isRunning = true
         this.importError = null
         try {
+          let sql = null
           this.importStarted = true
-          const data = await importerClass.importFile()
+          if (isNewTable) {
+            sql = await this.createNewTable(importOptions.table)
+          }
+          await this.$util.send('import/importFile', { id: importerClass, createTableSql: sql })
           this.timer = `${(new Date() - start) / 1000} seconds`
         } catch (err) {
           this.importError = err.message
         } finally {
+          await this.$store.dispatch('updateTables')
           this.tab.isRunning = false
         }
       }
@@ -290,7 +338,7 @@
 }
 .import-error-message {
   display: block;
-  overflow-x:hidden;
+  overflow-x: hidden;
   max-height: 30vh;
 }
 a:hover {
@@ -304,5 +352,17 @@ a:hover {
 }
 .copy-btn {
   margin-top: 1rem;
+}
+.spinning {
+  animation: spin 5s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

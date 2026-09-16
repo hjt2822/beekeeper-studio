@@ -1,0 +1,356 @@
+import _ from "lodash";
+import PluginRegistry from "./PluginRegistry";
+import PluginFileManager from "./PluginFileManager";
+import {
+  Manifest as AnyVersionManifest,
+  ManifestV1 as Manifest,
+  PluginOrigin,
+  PluginRepository,
+  PluginSettings,
+  PluginSnapshot,
+} from "./types";
+import rawLog from "@bksLogger";
+import PluginRepositoryService from "./PluginRepositoryService";
+import { UserSetting } from "@/common/appdb/models/user_setting";
+import semver from "semver";
+import { PluginError, PluginSystemError } from "@/lib/errors";
+import { convertToManifestV1, isManifestV0, mapViewsAndMenuFromV0ToV1 } from "./utils";
+import { Hookable } from "./Hookable";
+
+const log = rawLog.scope("PluginManager");
+
+export type PluginManagerOptions = {
+  fileManager?: PluginFileManager;
+  registry?: PluginRegistry;
+  appVersion: string;
+}
+
+export default class PluginManager extends Hookable {
+  private initialized = false;
+  public readonly registry: PluginRegistry;
+  public readonly fileManager: PluginFileManager;
+  private manifests: Manifest[] = [];
+  pluginSettings: PluginSettings = {};
+  private pluginLocks: string[] = [];
+
+  /** A Constant for the setting key */
+  private static readonly PLUGIN_SETTINGS = "pluginSettings";
+
+  constructor(readonly options: PluginManagerOptions) {
+    super();
+    this.fileManager = options.fileManager;
+    this.registry =
+      options.registry ||
+      new PluginRegistry(new PluginRepositoryService());
+  }
+
+  async initialize() {
+    if (this.initialized) {
+      log.warn("Calling initialize when already initialized");
+      return;
+    }
+
+    // FIXME: Migrate to full ini file configuration
+    await this.loadPluginSettings();
+
+    await this.callHook("before-initialize");
+
+    const installedPlugins = this.fileManager.scanPlugins().map(convertToManifestV1);
+    this.manifests = installedPlugins;
+
+    log.debug("Installed plugins:", installedPlugins);
+
+    this.initialized = true;
+
+    for (const plugin of installedPlugins) {
+      if (!this.pluginSettings[plugin.id]?.autoUpdate) {
+        continue;
+      }
+
+      try {
+        if (await this.checkForUpdates(plugin.id)) {
+          await this.updatePlugin(plugin.id);
+        }
+      } catch (e) {
+        log.error(`Failed to check for updates for plugin "${plugin.id}"`, e);
+      }
+    }
+  }
+
+  async getEntries() {
+    this.initializeGuard();
+    return await this.registry.getEntries();
+  }
+
+  /**
+   * Check if the view's entrypoint exists. The plugin must be installed,
+   * and the view must be defined in the plugin's manifest.
+   *
+   * @throws if `pluginId` or `viewId` is not found
+   **/
+  viewEntrypointExists(pluginId: string, viewId: string): boolean {
+    const manifest = this.manifests.find((manifest) => manifest.id === pluginId);
+    if (!manifest) {
+      throw new PluginSystemError(
+        "PLUGIN_NOT_FOUND",
+        `Plugin "${pluginId}" not found.`
+      );
+    }
+    const { views } = isManifestV0(manifest)
+      ? mapViewsAndMenuFromV0ToV1(manifest)
+      : manifest.capabilities;
+    const view = views.find((v) => v.id === viewId);
+    if (!view) {
+      throw new PluginSystemError(
+        "PLUGIN_VIEW_NOT_FOUND",
+        `View "${viewId}" not found in plugin "${pluginId}".`
+      );
+    }
+    return this.fileManager.viewEntrypointExists(manifest, view);
+  }
+
+  async getRepository(pluginId: string): Promise<PluginRepository> {
+    this.initializeGuard();
+    return await this.registry.getRepository(pluginId);
+  }
+
+ /** Returns snapshots of installed plugins, derived from manifests and runtime state */
+  async getPlugins(): Promise<PluginSnapshot[]> {
+    this.initializeGuard();
+
+    const snapshots: PluginSnapshot[] = [];
+
+    for (const manifest of this.manifests) {
+      const loadable = this.isPluginLoadable(manifest);
+
+      let origin: PluginOrigin = "unlisted";
+
+      try {
+        const found = await this.registry.findEntry(manifest.id);
+        origin = found.origin;
+      } catch (e) {
+        if (e instanceof PluginSystemError && e.code === "PLUGIN_NOT_FOUND") {
+          // There's nothing wrong if the plugin is not found in the registry.
+          // It may be a local plugin.
+        } else {
+          // Else, it might be a real error
+          log.error(e);
+        }
+      }
+
+      snapshots.push({
+        manifest,
+        loadable,
+        disableState: { disabled: false },
+        origin,
+      });
+    }
+
+    return await this.applyHook("plugin-snapshots", snapshots);
+  }
+
+  /** Plugin is not loadable if the **current app version** is lower than the
+   * **minimum app version** required by the plugin. */
+  isPluginLoadable(manifest: AnyVersionManifest): boolean {
+    if (!manifest.minAppVersion) {
+      return true;
+    }
+    return semver.lte(semver.coerce(manifest.minAppVersion), semver.coerce(this.options.appVersion));
+  }
+
+  /** Install the latest version of a plugin. */
+  async installPlugin(id: string): Promise<Manifest> {
+    this.initializeGuard();
+
+    await this.callHook("before-install-plugin", id);
+
+    let update = false;
+
+    // If plugin is already installed, perform update
+    if (this.manifests.find((manifest) => manifest.id === id)) {
+      update = true;
+    }
+
+    return await this.withPluginLock(id, async () => {
+      const info = await this.registry.getRepository(id);
+      if (!info) {
+        throw new PluginSystemError(
+          "PLUGIN_NOT_FOUND",
+          `Plugin "${id}" not found in registry.`
+        );
+      }
+
+      // The plugin is downloaded into a directory named after the registry id.
+      // Refuse to install if the release manifest declares a different id, so
+      // the on-disk directory name and the manifest id can never diverge (which
+      // is what allows a manifest id to later target another path).
+      if (info.latestRelease.manifest.id !== id) {
+        throw new PluginError(
+          "MANIFEST_PARSE",
+          `Plugin "${id}" manifest declares mismatched id "${info.latestRelease.manifest.id}".`
+        );
+      }
+
+      if (!this.isPluginLoadable(info.latestRelease.manifest)) {
+        throw new PluginSystemError(
+          "PLUGIN_NOT_SUPPORTED",
+          `${info.latestRelease.manifest.name} requires Beekeeper Studio ≥ 5.5.0. Please update the app first.`
+        );
+      }
+
+      log.debug(`Installing plugin "${id}" ${info.latestRelease.manifest.version}...`);
+
+      if (update) {
+        await this.fileManager.update(id, info.latestRelease);
+      } else {
+        await this.fileManager.download(id, info.latestRelease);
+      }
+
+      const manifest = this.fileManager.getManifest(id);
+      const installedPluginIdx = this.manifests.findIndex(
+        (manifest) => manifest.id === id
+      );
+      if (installedPluginIdx === -1) {
+        this.manifests.push(manifest);
+      } else {
+        this.manifests[installedPluginIdx] = manifest;
+      }
+
+      if (!this.pluginSettings[id]) {
+        this.pluginSettings[id] = {
+          autoUpdate: true,
+        };
+      }
+      await this.savePluginSettings();
+
+      log.info(`Installed plugin "${id}" v${info.latestRelease.manifest.version}`);
+
+      return manifest;
+    });
+  }
+
+  async updatePlugin(id: string): Promise<Manifest> {
+    this.initializeGuard();
+    await this.registry.reloadRepository(id);
+    return await this.installPlugin(id);
+  }
+
+  async uninstallPlugin(id: string): Promise<void> {
+    this.initializeGuard();
+    return await this.withPluginLock(id, async () => {
+      log.debug(`Uninstalling plugin "${id}"...`);
+
+      this.fileManager.remove(id);
+      this.manifests = this.manifests.filter(
+        (manifest) => manifest.id !== id
+      );
+
+      log.debug(`Plugin "${id}" uninstalled!`);
+    });
+  }
+
+  /** if returns true, update is available */
+  async checkForUpdates(id: string): Promise<boolean> {
+    this.initializeGuard();
+    const manifest = this.manifests.find(
+      (manifest) => manifest.id === id
+    );
+    if (!manifest) {
+      throw new Error(`Plugin "${id}" is not installed.`);
+    }
+
+    const head = await this.registry.reloadRepository(manifest.id);
+
+    // latest release is not newer
+    if (semver.lte(semver.coerce(head.latestRelease.manifest.version), semver.coerce(manifest.version))) {
+      return false;
+    }
+
+    return this.isPluginLoadable(head.latestRelease.manifest);
+  }
+
+  async getPluginAsset(manifest: Manifest, filename: string): Promise<string> {
+    this.initializeGuard();
+    return this.fileManager.readAsset(manifest, filename);
+  }
+
+  private async withPluginLock<T>(
+    id: string,
+    callback: () => T | Promise<T>
+  ): Promise<T> {
+    let ret: T;
+
+    if (this.pluginLocks.includes(id)) {
+      throw new Error(`Plugin "${id}" is not idle.`);
+    }
+
+    this.pluginLocks.push(id);
+
+    try {
+      ret = await callback();
+    } finally {
+      this.pluginLocks = this.pluginLocks.filter((lock) => lock !== id);
+    }
+
+    return ret;
+  }
+
+  /**
+   * Loads the list of disabled auto-update plugins from the database
+   * @todo all plugin settings should be loaded and saved from the config files
+   */
+  private async loadPluginSettings() {
+    const setting = await UserSetting.get(PluginManager.PLUGIN_SETTINGS);
+    if (setting && setting.value) {
+      this.pluginSettings = setting.value as PluginSettings;
+      log.debug(
+        `Loaded plugin settings: ${JSON.stringify(this.pluginSettings)}`
+      );
+    }
+  }
+
+  /**
+   * Saves the current list of disabled auto-update plugins to the database
+   */
+  private async savePluginSettings() {
+    await UserSetting.set(
+      PluginManager.PLUGIN_SETTINGS,
+      JSON.stringify(this.pluginSettings)
+    );
+    log.debug(`Saved plugin settings.`);
+  }
+
+  /**
+   * Enable or disable automatic update checks for a specific plugin
+   */
+  async setPluginAutoUpdateEnabled(id: string, enabled: boolean) {
+    if (!this.pluginSettings[id]) {
+      this.pluginSettings[id] = { autoUpdate: enabled };
+    } else {
+      this.pluginSettings[id].autoUpdate = enabled;
+    }
+    // Persist the changes to the database
+    await this.savePluginSettings();
+  }
+
+  /**
+   * Get the current auto-update setting for a specific plugin
+   */
+  getPluginAutoUpdateEnabled(id: string): boolean {
+    if (!_.has(this.pluginSettings, id)) {
+      log.warn(`Plugin "${id}" not found in plugin settings.`);
+      return false;
+    }
+    return this.pluginSettings[id].autoUpdate;
+  }
+
+  private initializeGuard() {
+    if (!this.initialized) {
+      throw new Error("Plugin manager is not initialized.");
+    }
+  }
+
+  get isInitialized() {
+    return this.initialized;
+  }
+}

@@ -5,6 +5,9 @@
     v-hotkey="allHotkeys"
     :class="{active: menuActive}"
     ref="nav"
+    tabindex="-1"
+    role="menubar"
+    @keydown="maybeCaptureKeydown"
   >
     <!-- TOP MENU, eg File, Edit -->
     <ul class="menu-bar">
@@ -25,17 +28,25 @@
         <ul>
           <li
             class="menu-item"
-            :class="{'has-children': !!item.submenu, ...hoverClass(item)}"
-            v-for="(item, idx) in (menu.submenu || [])"
+            :class="{'has-children': !!item.submenu, ...hoverClass(item), 'disabled-app-menu': isMenuItemDisabled(item.id)}"
+            v-for="(item, idx) in visibleSubmenuItems(menu)"
             :key="item.id || idx"
           >
+            <div v-if="item.type === 'separator'" class="separator" />
             <a
+              v-else
               @mousedown.prevent="noop()"
               @mouseup.prevent="handle(item)"
               @mouseover.prevent="setHover(item)"
               :class="hoverClass(item)"
             >
-              <span class="label">{{ item.label }}</span>
+              <span class="label">
+                <span
+                  class="material-icons"
+                  v-if="item.checked"
+                >done</span>
+                <span>{{ item.label }}</span>
+              </span>
               <span class="shortcut">{{ shortcutText(item) }}</span>
             </a>
             <!-- Second Level Menu, eg Dark Theme, Light Theme -->
@@ -45,7 +56,9 @@
                 v-for="subitem in (item.submenu || [])"
                 :key="subitem.label"
               >
+                <div v-if="item.type === 'separator'" class="separator" />
                 <a
+                  v-else
                   @mouseover.prevent="setHover(subitem, item)"
                   :class="hoverClass(subitem)"
                   @mousedown.prevent="noop()"
@@ -72,7 +85,7 @@
 import _ from 'lodash'
 import ClientMenuActionHandler from '../../lib/menu/ClientMenuActionHandler'
 import MenuBuilder from '../../common/menus/MenuBuilder'
-import { mapGetters } from 'vuex'
+import { mapGetters, mapState } from 'vuex'
 
 
 export default {
@@ -82,7 +95,6 @@ export default {
     return {
       menuBuilder: null,
       actionHandler: new ClientMenuActionHandler(),
-      menus: [],
       menuActive: false,
       selected: null,
       hovered: null,
@@ -94,7 +106,7 @@ export default {
         "ArrowRight": this.moveRight,
         "Escape": this.closeMenu,
         "Enter": this.clickHovered
-      }
+      },
     }
   },
   computed: {
@@ -114,16 +126,11 @@ export default {
     menuElements() {
       return Array.from(this.$refs.nav.getElementsByTagName("*"))
     },
-    ...mapGetters({'settings': 'settings/settings'})
+    ...mapGetters('menuBar', ['menus', 'connectionMenuItems', 'appMenuItems']),
+    ...mapState(['connected']),
+    ...mapState('tabs', { activeTab: 'active' })
   },
   watch: {
-    settings: {
-      deep: true,
-      handler() {
-        this.menuBuilder = new MenuBuilder(this.settings, this.actionHandler, this.$config)
-        this.menus = this.menuBuilder.buildTemplate()
-      }
-    },
     menuActive() {
       if (!this.menuActive) {
         this.selected = null
@@ -136,6 +143,15 @@ export default {
     }
   },
   methods: {
+    isMenuItemDisabled(itemId){
+      if (this.connectionMenuItems.includes(itemId) && !this.connected) return true;
+      if (this.appMenuItems.includes(itemId) && this.connected) return true;
+      if (itemId === 'paste-as-new-rows') return this.activeTab?.tabType !== 'table';
+      return false;
+    },
+    visibleSubmenuItems(menu) {
+      return (menu.submenu || []).filter(item => item.visible !== false);
+    },
     getNext(array, item) {
       const selectedIndex = item ? _.indexOf(array, item) : -1
       const newIndex = selectedIndex >= array.length -1 ? 0 : selectedIndex + 1
@@ -226,6 +242,7 @@ export default {
     setActive(item) {
       this.menuActive = !this.menuActive
       this.selected = item
+      this.$nextTick(() => this.$refs.nav?.focus())
     },
     setSelected(item) {
       this.selected = item
@@ -255,17 +272,22 @@ export default {
       // Empty on purpose
     }
   },
-  mounted() {
-    this.menuBuilder = new MenuBuilder(this.$store.state.settings.settings, this.actionHandler, this.$config)
-    this.menus = this.menuBuilder.buildTemplate()
+  async mounted() {
     document.addEventListener('click', this.maybeHideMenu)
-    window.addEventListener('keydown', this.maybeCaptureKeydown, false)
   },
   beforeDestroy() {
     document.removeEventListener('click', this.maybeHideMenu)
-    window.removeEventListener('keydown', this.maybeCaptureKeydown, false)
   }
 
 
 }
 </script>
+
+<style scoped>
+.separator {
+  margin-block: 0.35em;
+  width: 100%;
+  width: 100%;
+  border-bottom: 1px solid var(--border-color);
+}
+</style>

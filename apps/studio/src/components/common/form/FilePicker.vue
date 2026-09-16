@@ -5,17 +5,19 @@
     <input
       :id="inputId"
       type="text"
-      class="form-control clickable"
+      class="form-control"
       placeholder="No file selected"
+      :class="{ clickable: !editable }"
       :title="value"
       :value="inputValue"
       :disabled="disabled"
-      readonly
-      @click.prevent.stop="openFilePickerDialog"
+      :readonly="!editable"
+      @click.prevent.stop="!editable && openFilePickerDialog()"
+      @input="$emit('input', $event.target.value)"
     >
     <div
       class="input-group-append"
-      :class="{ 'not-last': hasOtherActions }"
+      :class="{ 'not-last': hasOtherActions || showCreateButton }"
       @click.prevent.stop="openFilePickerDialog"
     >
       <a
@@ -23,6 +25,19 @@
         class="btn btn-flat"
         :class="{disabled}"
       >{{ buttonText }}</a>
+    </div>
+    <div
+      v-if="showCreateButton"
+      class="input-group-append"
+    >
+      <a
+        type="button"
+        class="btn btn-flat"
+        :class="{disabled}"
+        @click="openFilePickerDialog({ save: true })"
+      >
+        Create
+      </a>
     </div>
     <slot name="actions" />
   </div>
@@ -41,6 +56,9 @@ export default {
       required: false,
       default: ''
     },
+    // NOTE: this is now deprecated on Linux as of Electron 41, as GTK apparently intends
+    // to remove support for it as well:
+    // https://github.com/electron/electron/blob/main/docs/breaking-changes.md#deprecated-showhiddenfiles-in-dialogs-on-linux
     showHiddenFiles: {
       type: Boolean,
       required: false,
@@ -72,6 +90,18 @@ export default {
     inputId: {
       type: String,
       default: "file-picker"
+    },
+    editable: {
+      type: Boolean,
+      default: false,
+    },
+    showCreateButton: {
+      type: Boolean,
+      default: false,
+    },
+    directory: {
+      type: Boolean,
+      default: false
     }
   },
   computed: {
@@ -92,17 +122,24 @@ export default {
     }
   },
   methods: {
-    async openFilePickerDialog() {
+    async openFilePickerDialog(options = {}) {
       if(this.disabled) {
         return
       }
 
       const dialogConfig = {
-        properties: ['openFile']
+        properties: []
       }
 
-      if (this.defaultPath.toString().length > 0) {
-        dialogConfig.defaultPath = this.defaultPath
+      const effectiveDefault = this.defaultPath || (typeof this.value === 'string' ? this.value : '')
+      if (effectiveDefault.toString().length > 0) {
+        dialogConfig.defaultPath = effectiveDefault
+      }
+
+      if (this.directory) {
+        dialogConfig.properties.push('openDirectory')
+      } else {
+        dialogConfig.properties.push('openFile')
       }
 
       if (this.showHiddenFiles) {
@@ -113,8 +150,12 @@ export default {
         dialogConfig.properties.push('multiSelections')
       }
 
+      // NOTE: Electron now defaults to the Downloads directory for these methods
+      // Previously the OS would track the last opened directory and auto open there
+      // but Electron is now overriding that. If we want that behaviour back,
+      // we will have to manually track the last used directory ourselves
       let files
-      if (this.save) {
+      if (options.save ?? this.save) {
         files = [ this.$native.dialog.showSaveDialogSync({
           ...dialogConfig,
           ...this.options

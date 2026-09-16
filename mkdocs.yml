@@ -1,4 +1,4 @@
-site_name: Beekeeper Studio
+site_name: Beekeeper Studio Documentation
 site_url: https://docs.beekeeperstudio.io
 site_description: Beekeeper Studio user documentation - how to install, configure, and use Beekeeper Studio
 copyright: Copyright &copy; Beekeeper Studio, Inc
@@ -15,21 +15,25 @@ extra:
       name: Beekeeper Studio on GitHub
   generator: false
 theme:
+  language: en
   logo: assets/bks.svg
-  favicon: assets/favicon.ico
+  favicon: assets/favicon-96x96.png
   name: material
+  # Nav `icon:` resolves via theme templates as `.icons/<name>.svg` (see Material partials).
+  custom_dir: docs/assets/custom
   icon:
     repo: fontawesome/brands/github
   font:
     text: Rubik
   features:
-    - navigation.instant
+    # - navigation.instant - broken with i18n
     # - navigation.tabs
     - navigation.tabs.sticky
     - navigation.tracking
-    - navigation.sections
+    # - navigation.sections
     - navigation.footer
     - navigation.top
+    - navigation.tabs
     - search.suggest
     - search.highlight
     - content.action.edit
@@ -49,23 +53,69 @@ extra_javascript:
 plugins:
   - search
   - include-markdown
+  # i18n plugin for multi-language documentation
+  # Target languages (10 total):
+  #   - en: English (default)
+  #   - es: Spanish
+  #   - pt-BR: Portuguese (Brazil)
+  #   - de: German
+  #   - fr: French
+  #   - el: Greek
+  #   - ja: Japanese
+  #   - it: Italian
+  #   - ko: Korean
+  #   - id: Indonesian
+  - i18n:
+      docs_structure: suffix
+      fallback_to_default: true
+      reconfigure_material: true
+      reconfigure_search: true
+      languages:
+        - locale: en
+          default: true
+          name: English
+          build: true
+        - locale: es
+          name: Espanol
+          build: true
+          site_name: Documentacion de Beekeeper Studio
+          site_description: Documentacion de usuario de Beekeeper Studio - como instalar, configurar y usar Beekeeper Studio
+          nav_translations:
+            Introduction: Introduccion
+            Installation: Instalacion
+            Connecting To A Database: Conectar a una Base de Datos
+            Connection Options: Opciones de Conexion
+            Features: Caracteristicas
+            Data Import: Importar Datos
+            Diagrams: Diagramas
+            Cloud Workspaces: Espacios de Trabajo en la Nube
+            Plugins: Plugins
+            Configuration: Configuracion
+            Support: Soporte
+            Upgrading: Actualizar
+            ClickHouse: ClickHouse
+            SQLite: SQLite
+            Trino: Trino
 #  - social:
 #      cards_layout_options:
 #        background_color: "#2c2c2c"
 #        color: "#ffffff"
 #        font_family: Rubik
-
+  - ini-includer:
+      base_path: ../apps/studio
+      config_file: default.config.ini
 markdown_extensions:
+  - pymdownx.tasklist:
+      custom_checkbox: true
   - admonition
   - pymdownx.details
   - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
   - pymdownx.highlight:
-      anchor_linenums: true
-      line_spans: __span
       pygments_lang_class: true
   - pymdownx.inlinehilite
   - pymdownx.snippets
-  - pymdownx.superfences
   - tables
   - abbr
   - attr_list
@@ -74,38 +124,74 @@ markdown_extensions:
   - pymdownx.emoji:
       emoji_index: !!python/name:material.extensions.emoji.twemoji
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
+      options:
+        custom_icons:
+          - docs/assets/custom/.icons
 
 nav:
-  - Introduction: index.md
-  - getting-started-guide.md
-  - purchasing-a-license.md
-  - Installing:
+  - Introduction:
+    - index.md
+    - getting-started-guide.md
+  - Installation:
     - installation/index.md
-    - Supported Platforms:
-      - installation/windows.md
-      - installation/macos-m1-intel.md
-      - installation/linux.md
-  - Databases:
+    - installation/windows.md
+    - installation/macos-m1-intel.md
+    - installation/linux.md
+  - Connecting To A Database:
     - user_guide/connecting/supported-databases.md
-    - Connecting To A Database: user_guide/connecting/connecting.md
-    - DB Specific Guides:
-      - user_guide/connecting/sqlite.md
-      - user_guide/connecting/google-bigquery.md
-      - user_guide/connecting/oracle-database.md
-  - User Guide:
-    - user_guide/using-the-sql-editor.md
+    - Connection Options: user_guide/connecting/connecting.md
+    - user_guide/connecting/amazon-rds.md
+    - ClickHouse: user_guide/connecting/clickhouse.md
+    - user_guide/connecting/cockroachdb.md
+    - user_guide/connecting/duckdb.md
+    - DynamoDB: user_guide/connecting/dynamodb.md
+    - user_guide/connecting/firebird.md
+    - user_guide/connecting/google-bigquery.md
+    - GreengageDB: user_guide/connecting/greengage.md
+    - user_guide/connecting/mongodb.md
+    - user_guide/connecting/oracle-database.md
+    - user_guide/connecting/redis.md
+    - SQL Server: user_guide/connecting/sql-server.md
+    - SQLite: user_guide/connecting/sqlite.md
+    - Trino: user_guide/connecting/trino.md
+    - user_guide/connecting/surrealdb.md
+    - user_guide/connecting/azure-entraid.md
+    - user_guide/connecting/snowflake.md
+
+  - Features:
+    - user_guide/sql_editor/editor.md
+    - user_guide/sql-query-formatter.md
+    - user_guide/sql_editor/manual-transaction-management.md
+    - user_guide/sql_editor/editing-data.md
+    - user_guide/sql-ai-shell.md
     - user_guide/editing-data.md
-    - user_guide/data-export.md
     - user_guide/modify-tables.md
-    - user_guide/entity-relationship-diagrams-erd.md
-    - user_guide/backup-restore.md
-    - user_guide/cloud-storage-team-workspaces.md
-    - user_guide/importing-data-csv-json-etc.md
+    - user_guide/sql_editor/saving_queries.md
+    - user_guide/json-sidebar.md
     - user_guide/query-magics.md
+    - Data Import: user_guide/importing-data-csv-json-etc.md
+    - user_guide/data-export.md
+    - Diagrams: user_guide/entity-relationship-diagrams-erd.md
+    - user_guide/backup-restore.md
+    - Cloud Workspaces: user_guide/cloud-storage-team-workspaces.md
+    - Sharing & Permissions: user_guide/sharing.md
+    - user_guide/security.md
+    - Plugins: user_guide/plugins.md
+    - Configuration: user_guide/configuration.md
+  # - Plugin Development:
+  #   - Introduction: plugin_development/index.md
+  #   - Creating your first plugin: plugin_development/creating-your-first-plugin.md
+  #   - Plugin Views: plugin_development/plugin-views.md
+  #   - Manifest Reference: plugin_development/manifest.md
+  #   - API Reference: plugin_development/api-reference.md
+  #   - Publishing: plugin_development/publishing-plugins.md
   - Support:
-    - Upgrading: support/upgrading-from-the-community-edition.md
+    - purchasing/purchasing-a-license.md
+    - purchasing/license-types.md
+    - Upgrading: support/how-to-upgrade.md
     - support/subscription-management.md
     - support/contact-support.md
     - support/open-source.md
     - support/troubleshooting.md
     - support/data-location.md
+    - support/deprecated-configs.md

@@ -1,6 +1,7 @@
 import { uuidv4 } from "../uuid";
-import rawLog from 'electron-log/renderer';
+import rawLog from '@bksLogger';
 import _ from 'lodash';
+import { PluginError, PluginSystemError } from "../errors";
 
 const log = rawLog.scope('renderer/utilityconnection');
 
@@ -16,11 +17,15 @@ type Message = {
 
 export class UtilityConnection {
   private replyHandlers: Map<string, { resolve: any, reject: any }> = new Map();
-  private listeners: Array<{type: string, id: string, listener: Listener}> = new Array();
-  private messageQueue: Array<Message> = new Array();
+  private listeners: Array<{type: string, id: string, listener: Listener}> = [];
+  private messageQueue: Array<Message> = [];
   private port: MessagePort;
-  private sId: string;
+  private _sId: string;
   private portsRequested: boolean = false;
+
+  public get sId() {
+    return this._sId;
+  }
 
   public async hasWorkingPort(): Promise<boolean> {
     return new Promise((resolve, reject) => {
@@ -33,21 +38,43 @@ export class UtilityConnection {
 
   public setPort(port: MessagePort, sId: string) {
     this.port = port;
-    this.sId = sId;
+    this._sId = sId;
     log.info('RECEIVED PORT IN UtilityConnection: ', port);
     this.port.onmessage = (msg) => {
       const { data: msgData } = msg;
-      log.info('RECEIVED MESSAGE: ', msgData.type, msgData)
 
       if (msgData.type === 'error') {
         // handle errors
-        const { id, error, stack } = msgData;
+        const {
+          id,
+          error,
+          stack,
+          errorName,
+          errorCode,
+          errorDetail,
+          errorHint,
+        } = msgData
 
         const handler = this.replyHandlers.get(id);
         if (handler) {
           log.error('GOT ERROR BACK FOR REQUEST ID: ', id);
           this.replyHandlers.delete(id);
-          handler.reject(`${error} ${stack ? 'Stack: ' + stack : ''}`);
+          let err: Error;
+          if (errorName === "PluginSystemError") {
+            err = new PluginSystemError(errorCode, error);
+          } else if (errorName === "PluginError") {
+            err = new PluginError(errorCode, error);
+          } else {
+            err = new Error(error);
+          }
+
+          Object.assign(err, {
+            detail: errorDetail,
+            hint: errorHint,
+          })
+
+          err.stack = stack;
+          handler.reject(err);
         }
       } else if (msgData.type === 'reply') {
         const { id, data } = msgData;
@@ -64,6 +91,8 @@ export class UtilityConnection {
         log.info('HANDLING REQUEST WITH LISTENER (type, id): ', type, id);
         const { input } = msgData;
         listener(input);
+      } else {
+        log.info('RECEIVED UNRECOGNIZED MESSAGE: ', msgData.type, msgData)
       }
     }
 
@@ -72,7 +101,7 @@ export class UtilityConnection {
     if (this.messageQueue.length > 0) {
       this.messageQueue.forEach(({ handlerName, args, id, resolve, reject }) => {
         log.info('PROCESSING QUEUED REQUEST: ', handlerName, id);
-        args = { sId: this.sId, ...args };
+        args = { sId: this._sId, ...args };
         this.replyHandlers.set(id, { resolve, reject });
         this.port.postMessage({ id, name: handlerName, args: args ?? {}})
       });
@@ -80,7 +109,7 @@ export class UtilityConnection {
     }
   }
 
-  public async send(handlerName: string, args: any): Promise<any> {
+  public async send(handlerName: string, args?: any): Promise<any> {
     return new Promise<any>((resolve, reject) => {
       const id = uuidv4();
 
@@ -93,7 +122,7 @@ export class UtilityConnection {
         }
       } else {
         log.info('SENDING REQUEST FOR NAME, ID: ', handlerName, id)
-        args = { sId: this.sId, ...args };
+        args = { sId: this._sId, ...args };
 
         this.replyHandlers.set(id, { resolve, reject });
         this.port.postMessage({id, name: handlerName, args: args ?? {}});

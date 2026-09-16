@@ -1,6 +1,6 @@
 import { BackupConfig } from "./models/BackupConfig";
 import { IConnection } from "@/common/interfaces/IConnection";
-import { IDbConnectionServerConfig } from "./types";
+import { ConnectionType, IDbConnectionServerConfig } from "./types";
 import { SupportedBackupFeatures, Command, CommandSettingSection, CommandControlAction, CommandSettingControl, SupportedFeatures } from "./models";
 import { TempFileManager } from "../TempFileManager";
 import Vue from "vue";
@@ -44,14 +44,67 @@ export abstract class BaseCommandClient {
   protected static sslCA?: string;
   protected static sslCert?: string;
   protected static sslKey?: string;
+  protected static connectionType?: ConnectionType;
 
   protected static _password?: string;
-  static get quotedPassword() {
-    return `"${BaseCommandClient._password.replace(/"/g, window.platformInfo.isWindows ? `""` : `\\"`)}"`;
+
+  get outputFilePath() {
+    let filepath = '';
+    if (this._config.outputPath && this._config.outputPath.trim() !== '') {
+      filepath += `${this._config.outputPath}${this.pathSep}`;
+    }
+    if (this.filename && this._config.format !== 'd') {
+      filepath += this.filename;
+    }
+    return filepath;
+  }
+
+  get inputFilePath() {
+    return this._config.inputPath;
+  }
+
+  // sqlite3's dot-commands (.output / .read) parse their own arguments, so a
+  // path with spaces must be quoted for sqlite itself. Commands are spawned
+  // without a shell, so this is the only quoting ever applied to arguments.
+  protected static sqliteQuote(value: string): string {
+    return `'${value}'`;
+  }
+
+  // Splits a free-text custom-arguments string into individual argv entries,
+  // honouring single and double quotes. Required because the arguments go
+  // straight to spawn() with no shell to do the word-splitting.
+  protected static parseArgs(input: string): string[] {
+    const args: string[] = [];
+    let current = '';
+    let quote: '"' | "'" | null = null;
+    let hasToken = false;
+    for (const ch of input) {
+      if (quote) {
+        if (ch === quote) quote = null;
+        else current += ch;
+      } else if (ch === '"' || ch === "'") {
+        quote = ch;
+        hasToken = true;
+      } else if (/\s/.test(ch)) {
+        if (hasToken) {
+          args.push(current);
+          current = '';
+          hasToken = false;
+        }
+      } else {
+        current += ch;
+        hasToken = true;
+      }
+    }
+    if (hasToken) {
+      args.push(current);
+    }
+    return args;
   }
 
   set connConfig(value: IConnection) {
     BaseCommandClient.databaseName = BaseCommandClient.databaseName ?? value.defaultDatabase;
+    BaseCommandClient.connectionType = value.connectionType;
     BaseCommandClient.username = value.username;
     BaseCommandClient._password = value.password;
     BaseCommandClient.host = value.host;
@@ -135,10 +188,16 @@ export abstract class BaseCommandClient {
           required: true,
           controlOptions: {
             buttonLabel: `Choose ${this.toolName} binary`,
+            // macOS's native picker resolves a chosen symlink (e.g.
+            // /opt/homebrew/bin/az) to its version-pinned Homebrew target, which
+            // breaks after `brew upgrade`. noResolveAliases keeps the stable
+            // symlink path. Electron applies it on macOS and silently ignores it
+            // on Windows/Linux, so passing it unconditionally is safe.
+            properties: ['openFile', 'noResolveAliases'],
           },
           placeholder: 'Choose',
           valid: (config: BackupConfig): boolean => {
-            return this.allowedTools.some(value => config.dumpToolPath.endsWith(value)) || 
+            return this.allowedTools.some(value => config.dumpToolPath.endsWith(value)) ||
               this.allowedTools.some(value => config.dumpToolPath.endsWith(`${value}.exe`));
           },
           actions: [
@@ -165,7 +224,7 @@ export abstract class BaseCommandClient {
         return !this.toolName || (config.dumpToolPath && config.dumpToolPath.includes(this.toolName));
       },
       controls: [
-        isRestore && BaseCommandClient._conn.supportedFeatures().backDirFormat ? {
+        isRestore && BaseCommandClient._supportedFeatures.backDirFormat ? {
           controlType: 'checkbox',
           settingName: 'isDir',
           settingDesc: 'Restore a "directory" backup',
@@ -314,21 +373,22 @@ export abstract class BaseCommandClient {
   }
 
   public async writeToLog(content: string) {
-    await this.tempFile.write(content);
+    await this.tempFile?.write(content);
   }
 
   public deleteLogFile() {
-    this.tempFile.deleteFile();
+    this.tempFile?.deleteFile();
   }
 
   public get logPath() {
-    return this.tempFile.path;
+    return this.tempFile?.path;
   }
 
   // end log file things
 
   protected get mainCommand() {
-    return window.platformInfo.isWindows ? `"${this._config.dumpToolPath}"` : this._config.dumpToolPath;
+    // Spawned without a shell, so the path is passed verbatim — no quoting.
+    return this._config.dumpToolPath;
   }
 
 
@@ -403,7 +463,7 @@ export abstract class BaseCommandClient {
       return null;
     }
 
-    return await Vue.prototype.$util.send('backup/whichDumpTool', { toolName: this.toolName });
+    return await Vue.prototype.$util.send('cli/which', { toolName: this.toolName });
   }
 
   private async _runCommand(command: Command): Promise<void> {

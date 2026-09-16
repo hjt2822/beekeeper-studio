@@ -1,13 +1,16 @@
 import _ from 'lodash'
 import {AppEvent} from '../common/AppEvent'
 import { buildWindow, getActiveWindows, OpenOptions } from './WindowBuilder'
-import { app , shell } from 'electron'
+import { app } from 'electron'
+import { safeOpenExternal } from './lib/electron/safeOpenExternal'
 import platformInfo from '../common/platform_info'
 import path from 'path'
 import { IGroupedUserSettings } from '../common/appdb/models/user_setting'
 import { IMenuActionHandler } from '@/common/interfaces/IMenuActionHandler'
 import { autoUpdater } from "electron-updater"
-import Vue from 'vue';
+import { DevLicenseState } from '@/lib/license';
+import { setAllowBeta } from './update_manager'
+import { CustomMenuAction } from '@/types'
 
 type ElectronWindow = Electron.BrowserWindow | undefined
 
@@ -40,6 +43,9 @@ export default class NativeMenuActionHandlers implements IMenuActionHandler {
   paste(_1: Electron.MenuItem, win: ElectronWindow): void {
     if (win) win.webContents.paste()
   }
+  pasteAsNewRows(_1: Electron.MenuItem, win: ElectronWindow): void {
+    if (win) win.webContents.send(AppEvent.pasteAsNewRows)
+  }
   selectAll(_1: Electron.MenuItem, win: ElectronWindow): void {
     if (win) win.webContents.selectAll()
   }
@@ -64,6 +70,32 @@ export default class NativeMenuActionHandlers implements IMenuActionHandler {
     if (win) await this.setZoom(win.webContents.zoomLevel - 0.5)
   }
 
+  setEditorFontSize = async (size: number): Promise<void> => {
+    const MIN_SIZE = 10
+    const MAX_SIZE = 24
+    const boundedSize = Math.max(MIN_SIZE, Math.min(MAX_SIZE, size))
+
+    this.settings.editorFontSize.value = boundedSize
+    await this.settings.editorFontSize.save()
+    getActiveWindows().forEach(window => {
+      window.send(AppEvent.settingsChanged, 'editorFontSize')
+    })
+  }
+
+  editorFontSizeReset = async (): Promise<void> => {
+    await this.setEditorFontSize(14)
+  }
+
+  editorFontSizeIncrease = async (): Promise<void> => {
+    const currentSize = (this.settings.editorFontSize?.value as number) || 14
+    await this.setEditorFontSize(currentSize + 2)
+  }
+
+  editorFontSizeDecrease = async (): Promise<void> => {
+    const currentSize = (this.settings.editorFontSize?.value as number) || 14
+    await this.setEditorFontSize(currentSize - 2)
+  }
+
   reload = async (_1: Electron.MenuItem, win: ElectronWindow): Promise<void> => {
     if (win) win.webContents.reloadIgnoringCache()
   }
@@ -84,15 +116,28 @@ export default class NativeMenuActionHandlers implements IMenuActionHandler {
   }
 
   opendocs(): void {
-    shell.openExternal("https://docs.beekeeperstudio.io/")
+    safeOpenExternal("https://docs.beekeeperstudio.io/")
   }
 
-  checkForUpdates(menuItem: Electron.MenuItem, win: Electron.BrowserWindow): void {
+  contactSupport(): void {
+    safeOpenExternal("https://docs.beekeeperstudio.io/support/contact-support/")
+  }
+
+  openGettingStarted(): void {
+    safeOpenExternal("https://docs.beekeeperstudio.io/getting-started-guide/")
+  }
+
+  checkForUpdates(_menuItem: Electron.MenuItem, _win: Electron.BrowserWindow): void {
     autoUpdater.checkForUpdates()
   }
 
   devtools(_1: Electron.MenuItem, win: ElectronWindow): void {
     if (win) win.webContents.toggleDevTools()
+  }
+
+  restart(): void {
+    app.relaunch();
+    app.quit();
   }
 
   // first argument when coming from the ipcRenderer when opening a new window via new database doesn't return the same arguments as going through menu natively
@@ -128,34 +173,20 @@ export default class NativeMenuActionHandlers implements IMenuActionHandler {
     this.settings.theme.userValue = label.toLowerCase().replaceAll(" ", "-")
     await this.settings.theme.save()
     getActiveWindows().forEach( window => {
-      window.send(AppEvent.settingsChanged)
+      window.send(AppEvent.settingsChanged, 'theme')
     })
   }
 
   addBeekeeper = async (_1: Electron.MenuItem, win: ElectronWindow): Promise<void> => {
-    const existing = await Vue.prototype.$util.send('appdb/saved/findOne', { options: {where: { defaultDatabase: platformInfo.appDbPath }}});
-    if (!existing) {
-      const nu = {} as any;
-      nu.connectionType = 'sqlite'
-      nu.defaultDatabase = platformInfo.appDbPath
-      nu.name = "Beekeeper's Database"
-      nu.labelColor = 'orange'
-      await Vue.prototype.$util.send('appdb/saved/save', { obj: nu });
-    }
     if (win) win.webContents.send(AppEvent.beekeeperAdded)
   }
 
-  switchMenuStyle = async (menuItem: Electron.MenuItem): Promise<void> => {
-    const label = _.isString(menuItem) ? menuItem : menuItem.label
-    this.settings.menuStyle.value = label.toLowerCase()
-    await this.settings.menuStyle.save()
-    getActiveWindows().forEach( window => {
-      window.send(AppEvent.menuStyleChanged)
-    })
+  togglePrimarySidebar = async(_menuItem: Electron.MenuItem, win: ElectronWindow): Promise<void> => {
+    if (win) win.webContents.send(AppEvent.togglePrimarySidebar)
   }
 
-  toggleSidebar = async(_menuItem: Electron.MenuItem, win: ElectronWindow): Promise<void> => {
-    if (win) win.webContents.send(AppEvent.toggleSidebar)
+  toggleSecondarySidebar = async(_menuItem: Electron.MenuItem, win: ElectronWindow): Promise<void> => {
+    if (win) win.webContents.send(AppEvent.toggleSecondarySidebar)
   }
 
   disconnect = (_1: Electron.MenuItem, win: ElectronWindow): void => {
@@ -182,11 +213,59 @@ export default class NativeMenuActionHandlers implements IMenuActionHandler {
     if (win) win.webContents.send(AppEvent.promptSqlFilesImport);
   }
 
+  importConnectionFiles = (_menuItem: Electron.MenuItem, win: ElectronWindow) => {
+    if (win) win.webContents.send(AppEvent.promptConnectionFilesImport);
+  }
+
   toggleMinimalMode = async (): Promise<void> => {
     this.settings.minimalMode.value = !this.settings.minimalMode.value
     await this.settings.minimalMode.save()
     getActiveWindows().forEach( window => {
       window.send(AppEvent.settingsChanged)
     })
+  }
+
+  togglePrivacyMode = async (): Promise<void> => {
+    this.settings.privacyMode.value = !this.settings.privacyMode.value
+    await this.settings.privacyMode.save()
+    getActiveWindows().forEach(window => {
+      window.send(AppEvent.settingsChanged)
+    })
+  }
+
+  switchLicenseState = async (state: Electron.MenuItem | DevLicenseState, win: ElectronWindow) => {
+    if (win) win.webContents.send(AppEvent.switchLicenseState, state)
+  }
+
+  simulatePlatform = async (platform: Electron.MenuItem | string, win: ElectronWindow) => {
+    if (win) win.webContents.send(AppEvent.simulatePlatform, platform)
+  }
+
+  toggleBeta = async (menuItem: Electron.MenuItem): Promise<void> => {
+    const label = _.isString(menuItem) ? menuItem : menuItem.label
+    const beta = label.toLowerCase() == 'beta';
+    this.settings.useBeta.userValue = beta;
+    await this.settings.useBeta.save()
+    getActiveWindows().forEach( window => {
+      window.send(AppEvent.settingsChanged)
+    })
+    setAllowBeta(this.settings.useBeta.value as boolean);
+    autoUpdater.checkForUpdates();
+  }
+
+  managePlugins = (_menuItem: Electron.MenuItem, win: ElectronWindow): void => {
+    if (win) win.webContents.send(AppEvent.openPluginManager);
+  }
+
+  keyboardShortcuts = (_menuItem: Electron.MenuItem, win: ElectronWindow): void => {
+    if (win) win.webContents.send(AppEvent.openKeyboardShortcuts);
+  }
+
+  updatePin = (_1: Electron.MenuItem, win: ElectronWindow) => {
+    if (win) win.webContents.send(AppEvent.updatePin)
+  }
+
+  handleAction = (action: Electron.MenuItem | CustomMenuAction, win: ElectronWindow) => {
+    if (win && action && 'event' in action) win.webContents.send(action.event, action.args)
   }
 }
